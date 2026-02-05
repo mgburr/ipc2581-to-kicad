@@ -1,0 +1,22 @@
+# Build artifacts
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Compiled objects
+*.o
+*.a
+*.so
+*.dylib

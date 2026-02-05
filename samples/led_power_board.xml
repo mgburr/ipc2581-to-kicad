@@ -1,0 +1,391 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<IPC-2581 revision="C" xmlns="http://webstds.ipc.org/2581">
+  <Content>
+    <!-- Pad stack definitions -->
+    <DictionaryStandard>
+      <!-- SMD pads -->
+      <EntryStandard id="SMD_RECT_1.2x1.0">
+        <RectCenter width="1.2" height="1.0"/>
+      </EntryStandard>
+      <EntryStandard id="SMD_RECT_1.0x0.8">
+        <RectCenter width="1.0" height="0.8"/>
+      </EntryStandard>
+      <EntryStandard id="SMD_RECT_0.9x0.7">
+        <RectCenter width="0.9" height="0.7"/>
+      </EntryStandard>
+      <EntryStandard id="SMD_RECT_1.6x0.9">
+        <RectCenter width="1.6" height="0.9"/>
+      </EntryStandard>
+      <EntryStandard id="SMD_RECT_2.0x1.0">
+        <RectCenter width="2.0" height="1.0"/>
+      </EntryStandard>
+      <!-- SOT-23 tab/thermal pad -->
+      <EntryStandard id="SMD_RECT_3.0x1.7">
+        <RectCenter width="3.0" height="1.7"/>
+      </EntryStandard>
+      <!-- Through-hole pads -->
+      <EntryStandard id="THT_CIRCLE_1.7_D1.0">
+        <Circle diameter="1.7"/>
+        <Drill diameter="1.0" plated="true"/>
+      </EntryStandard>
+      <EntryStandard id="THT_OVAL_2.4x1.6_D1.0">
+        <Oval width="2.4" height="1.6"/>
+        <Drill diameter="1.0" plated="true"/>
+      </EntryStandard>
+      <!-- Vias -->
+      <EntryStandard id="VIA_0.8_D0.4">
+        <Circle diameter="0.8"/>
+        <Drill diameter="0.4" plated="true"/>
+      </EntryStandard>
+      <EntryStandard id="VIA_0.6_D0.3">
+        <Circle diameter="0.6"/>
+        <Drill diameter="0.3" plated="true"/>
+      </EntryStandard>
+      <!-- Mounting hole (NPTH) -->
+      <EntryStandard id="NPTH_3.2">
+        <Circle diameter="3.2"/>
+        <Drill diameter="3.2" plated="false"/>
+      </EntryStandard>
+    </DictionaryStandard>
+  </Content>
+
+  <!-- Net definitions -->
+  <LogicalNet name="VIN">
+    <PinRef componentRef="J1" pin="1"/>
+    <PinRef componentRef="C1" pin="1"/>
+    <PinRef componentRef="U1" pin="1"/>
+  </LogicalNet>
+  <LogicalNet name="GND">
+    <PinRef componentRef="J1" pin="2"/>
+    <PinRef componentRef="C1" pin="2"/>
+    <PinRef componentRef="C2" pin="2"/>
+    <PinRef componentRef="C3" pin="2"/>
+    <PinRef componentRef="U1" pin="2"/>
+    <PinRef componentRef="R2" pin="2"/>
+  </LogicalNet>
+  <LogicalNet name="VOUT">
+    <PinRef componentRef="U1" pin="3"/>
+    <PinRef componentRef="C2" pin="1"/>
+    <PinRef componentRef="C3" pin="1"/>
+    <PinRef componentRef="R1" pin="1"/>
+  </LogicalNet>
+  <LogicalNet name="LED_A">
+    <PinRef componentRef="R1" pin="2"/>
+    <PinRef componentRef="D1" pin="1"/>
+  </LogicalNet>
+  <LogicalNet name="LED_K">
+    <PinRef componentRef="D1" pin="2"/>
+    <PinRef componentRef="R2" pin="1"/>
+  </LogicalNet>
+
+  <Ecad>
+    <CadHeader units="MM"/>
+    <CadData>
+      <!-- Layer definitions -->
+      <Layer name="TOP_COPPER" layerFunction="SIGNAL" side="TOP"/>
+      <Layer name="BOTTOM_COPPER" layerFunction="SIGNAL" side="BOTTOM"/>
+      <Layer name="TOP_SOLDERMASK" layerFunction="SOLDERMASK" side="TOP"/>
+      <Layer name="BOTTOM_SOLDERMASK" layerFunction="SOLDERMASK" side="BOTTOM"/>
+      <Layer name="TOP_PASTE" layerFunction="PASTEMASK" side="TOP"/>
+      <Layer name="BOTTOM_PASTE" layerFunction="PASTEMASK" side="BOTTOM"/>
+      <Layer name="TOP_SILKSCREEN" layerFunction="SILKSCREEN" side="TOP"/>
+      <Layer name="BOTTOM_SILKSCREEN" layerFunction="SILKSCREEN" side="BOTTOM"/>
+      <Layer name="TOP_ASSEMBLY" layerFunction="ASSEMBLY" side="TOP"/>
+      <Layer name="BOARD_EDGE" layerFunction="BOARD_OUTLINE"/>
+      <Layer name="DOCUMENT" layerFunction="DOCUMENT"/>
+
+      <!-- Stackup -->
+      <Stackup>
+        <StackupGroup name="Stackup">
+          <StackupLayer layerOrGroupRef="TOP_SOLDERMASK" thickness="0.01">
+          </StackupLayer>
+          <StackupLayer layerOrGroupRef="TOP_COPPER" thickness="0.035">
+          </StackupLayer>
+          <StackupLayer layerOrGroupRef="CORE" thickness="1.51">
+            <Dielectric epsilonR="4.5" material="FR-4"/>
+          </StackupLayer>
+          <StackupLayer layerOrGroupRef="BOTTOM_COPPER" thickness="0.035">
+          </StackupLayer>
+          <StackupLayer layerOrGroupRef="BOTTOM_SOLDERMASK" thickness="0.01">
+          </StackupLayer>
+        </StackupGroup>
+      </Stackup>
+
+      <Step name="LED_POWER_BOARD">
+        <!-- Board outline: 40mm x 25mm rectangle with rounded corner at top-right -->
+        <Profile>
+          <Polygon>
+            <PolyBegin x="0" y="0"/>
+            <PolyStepSegment x="37" y="0"/>
+            <PolyStepCurve x="40" y="3" centerX="37" centerY="3" clockwise="true"/>
+            <PolyStepSegment x="40" y="25"/>
+            <PolyStepSegment x="0" y="25"/>
+            <PolyStepSegment x="0" y="0"/>
+          </Polygon>
+        </Profile>
+
+        <!-- ========== PACKAGE DEFINITIONS ========== -->
+
+        <!-- SOT-23-5: Voltage regulator (U1) -->
+        <Package name="SOT-23-5">
+          <Pin number="1" x="-0.95" y="-1.3" padstackDefRef="SMD_RECT_0.9x0.7"/>
+          <Pin number="2" x="0.0"   y="-1.3" padstackDefRef="SMD_RECT_0.9x0.7"/>
+          <Pin number="3" x="0.95"  y="-1.3" padstackDefRef="SMD_RECT_0.9x0.7"/>
+          <Pin number="4" x="0.95"  y="1.3"  padstackDefRef="SMD_RECT_0.9x0.7"/>
+          <Pin number="5" x="-0.95" y="1.3"  padstackDefRef="SMD_RECT_0.9x0.7"/>
+          <SilkScreen>
+            <Line startX="-1.6" startY="-0.8" endX="-1.6" endY="0.8" lineWidth="0.12"/>
+            <Line startX="-1.6" startY="0.8" endX="1.6" endY="0.8" lineWidth="0.12"/>
+            <Line startX="1.6" startY="0.8" endX="1.6" endY="-0.8" lineWidth="0.12"/>
+            <Line startX="1.6" startY="-0.8" endX="-1.6" endY="-0.8" lineWidth="0.12"/>
+            <Line startX="-1.6" startY="-1.8" endX="-1.6" endY="-0.8" lineWidth="0.12"/>
+          </SilkScreen>
+          <AssemblyDrawing>
+            <Line startX="-1.5" startY="-0.75" endX="-1.5" endY="0.75" lineWidth="0.1"/>
+            <Line startX="-1.5" startY="0.75" endX="1.5" endY="0.75" lineWidth="0.1"/>
+            <Line startX="1.5" startY="0.75" endX="1.5" endY="-0.75" lineWidth="0.1"/>
+            <Line startX="1.5" startY="-0.75" endX="-1.5" endY="-0.75" lineWidth="0.1"/>
+          </AssemblyDrawing>
+        </Package>
+
+        <!-- 0805 capacitor -->
+        <Package name="C_0805">
+          <Pin number="1" x="-1.0" y="0" padstackDefRef="SMD_RECT_1.2x1.0"/>
+          <Pin number="2" x="1.0" y="0"  padstackDefRef="SMD_RECT_1.2x1.0"/>
+          <SilkScreen>
+            <Line startX="-0.25" startY="0.7" endX="0.25" endY="0.7" lineWidth="0.12"/>
+            <Line startX="-0.25" startY="-0.7" endX="0.25" endY="-0.7" lineWidth="0.12"/>
+          </SilkScreen>
+          <AssemblyDrawing>
+            <Line startX="-1.0" startY="-0.5" endX="-1.0" endY="0.5" lineWidth="0.1"/>
+            <Line startX="-1.0" startY="0.5" endX="1.0" endY="0.5" lineWidth="0.1"/>
+            <Line startX="1.0" startY="0.5" endX="1.0" endY="-0.5" lineWidth="0.1"/>
+            <Line startX="1.0" startY="-0.5" endX="-1.0" endY="-0.5" lineWidth="0.1"/>
+          </AssemblyDrawing>
+        </Package>
+
+        <!-- 0603 resistor -->
+        <Package name="R_0603">
+          <Pin number="1" x="-0.8" y="0" padstackDefRef="SMD_RECT_1.0x0.8"/>
+          <Pin number="2" x="0.8" y="0"  padstackDefRef="SMD_RECT_1.0x0.8"/>
+          <SilkScreen>
+            <Line startX="-0.2" startY="0.55" endX="0.2" endY="0.55" lineWidth="0.12"/>
+            <Line startX="-0.2" startY="-0.55" endX="0.2" endY="-0.55" lineWidth="0.12"/>
+          </SilkScreen>
+          <AssemblyDrawing>
+            <Line startX="-0.8" startY="-0.4" endX="-0.8" endY="0.4" lineWidth="0.1"/>
+            <Line startX="-0.8" startY="0.4" endX="0.8" endY="0.4" lineWidth="0.1"/>
+            <Line startX="0.8" startY="0.4" endX="0.8" endY="-0.4" lineWidth="0.1"/>
+            <Line startX="0.8" startY="-0.4" endX="-0.8" endY="-0.4" lineWidth="0.1"/>
+          </AssemblyDrawing>
+        </Package>
+
+        <!-- 0603 LED -->
+        <Package name="LED_0603">
+          <Pin number="1" x="-0.75" y="0" padstackDefRef="SMD_RECT_1.0x0.8"/>
+          <Pin number="2" x="0.75" y="0"  padstackDefRef="SMD_RECT_1.0x0.8"/>
+          <SilkScreen>
+            <Line startX="-0.2" startY="0.55" endX="0.2" endY="0.55" lineWidth="0.12"/>
+            <Line startX="-0.2" startY="-0.55" endX="0.2" endY="-0.55" lineWidth="0.12"/>
+            <!-- Cathode marker -->
+            <Line startX="0.5" startY="-0.55" endX="0.5" endY="0.55" lineWidth="0.12"/>
+          </SilkScreen>
+          <AssemblyDrawing>
+            <Line startX="-0.8" startY="-0.4" endX="-0.8" endY="0.4" lineWidth="0.1"/>
+            <Line startX="-0.8" startY="0.4" endX="0.8" endY="0.4" lineWidth="0.1"/>
+            <Line startX="0.8" startY="0.4" endX="0.8" endY="-0.4" lineWidth="0.1"/>
+            <Line startX="0.8" startY="-0.4" endX="-0.8" endY="-0.4" lineWidth="0.1"/>
+          </AssemblyDrawing>
+        </Package>
+
+        <!-- 2-pin through-hole connector (2.54mm pitch) -->
+        <Package name="CONN_1x02_P2.54">
+          <Pin number="1" x="0"    y="0"    padstackDefRef="THT_OVAL_2.4x1.6_D1.0"/>
+          <Pin number="2" x="2.54" y="0"    padstackDefRef="THT_OVAL_2.4x1.6_D1.0"/>
+          <SilkScreen>
+            <Line startX="-1.5" startY="-1.2" endX="-1.5" endY="1.2" lineWidth="0.12"/>
+            <Line startX="-1.5" startY="1.2"  endX="4.04" endY="1.2" lineWidth="0.12"/>
+            <Line startX="4.04" startY="1.2"  endX="4.04" endY="-1.2" lineWidth="0.12"/>
+            <Line startX="4.04" startY="-1.2" endX="-1.5" endY="-1.2" lineWidth="0.12"/>
+            <!-- Pin 1 marker -->
+            <Line startX="-1.5" startY="-1.2" endX="-0.5" endY="-1.8" lineWidth="0.12"/>
+            <Line startX="-0.5" startY="-1.8" endX="0.5"  endY="-1.2" lineWidth="0.12"/>
+          </SilkScreen>
+          <AssemblyDrawing>
+            <Line startX="-1.3" startY="-1.0" endX="-1.3" endY="1.0" lineWidth="0.1"/>
+            <Line startX="-1.3" startY="1.0"  endX="3.84" endY="1.0" lineWidth="0.1"/>
+            <Line startX="3.84" startY="1.0"  endX="3.84" endY="-1.0" lineWidth="0.1"/>
+            <Line startX="3.84" startY="-1.0" endX="-1.3" endY="-1.0" lineWidth="0.1"/>
+          </AssemblyDrawing>
+        </Package>
+
+        <!-- Mounting hole (no electrical connection) -->
+        <Package name="MountingHole_3.2mm">
+          <Pin number="1" x="0" y="0" padstackDefRef="NPTH_3.2"/>
+          <Courtyard>
+            <Line startX="-2.6" startY="-2.6" endX="2.6" endY="-2.6" lineWidth="0.05"/>
+            <Line startX="2.6" startY="-2.6" endX="2.6" endY="2.6" lineWidth="0.05"/>
+            <Line startX="2.6" startY="2.6" endX="-2.6" endY="2.6" lineWidth="0.05"/>
+            <Line startX="-2.6" startY="2.6" endX="-2.6" endY="-2.6" lineWidth="0.05"/>
+          </Courtyard>
+        </Package>
+
+        <!-- ========== COMPONENT PLACEMENTS ========== -->
+
+        <!-- Power input connector (top-left) -->
+        <Component refDes="J1" packageRef="CONN_1x02_P2.54" layerRef="TOP_COPPER" value="Power">
+          <Xform x="5.0" y="12.5" rotation="0"/>
+        </Component>
+
+        <!-- Input filter cap near connector -->
+        <Component refDes="C1" packageRef="C_0805" layerRef="TOP_COPPER" value="10uF">
+          <Xform x="12.0" y="8.0" rotation="0"/>
+        </Component>
+
+        <!-- Voltage regulator (center of board) -->
+        <Component refDes="U1" packageRef="SOT-23-5" layerRef="TOP_COPPER" value="AP2112K-3.3">
+          <Xform x="20.0" y="12.5" rotation="0"/>
+        </Component>
+
+        <!-- Output decoupling caps -->
+        <Component refDes="C2" packageRef="C_0805" layerRef="TOP_COPPER" value="10uF">
+          <Xform x="28.0" y="8.0" rotation="0"/>
+        </Component>
+        <Component refDes="C3" packageRef="C_0805" layerRef="TOP_COPPER" value="100nF">
+          <Xform x="28.0" y="17.0" rotation="0"/>
+        </Component>
+
+        <!-- LED current-limiting resistor -->
+        <Component refDes="R1" packageRef="R_0603" layerRef="TOP_COPPER" value="330R">
+          <Xform x="33.0" y="12.5" rotation="90"/>
+        </Component>
+
+        <!-- LED (top-right area) -->
+        <Component refDes="D1" packageRef="LED_0603" layerRef="TOP_COPPER" value="GREEN">
+          <Xform x="36.0" y="12.5" rotation="0"/>
+        </Component>
+
+        <!-- Pull-down resistor to GND (bottom side!) -->
+        <Component refDes="R2" packageRef="R_0603" layerRef="BOTTOM_COPPER" value="10K">
+          <Xform x="36.0" y="18.0" rotation="0" mirror="true"/>
+        </Component>
+
+        <!-- Mounting holes (corners) -->
+        <Component refDes="H1" packageRef="MountingHole_3.2mm" layerRef="TOP_COPPER">
+          <Xform x="3.5" y="3.5" rotation="0"/>
+        </Component>
+        <Component refDes="H2" packageRef="MountingHole_3.2mm" layerRef="TOP_COPPER">
+          <Xform x="3.5" y="21.5" rotation="0"/>
+        </Component>
+
+        <!-- ========== COPPER FEATURES: TOP LAYER ========== -->
+        <LayerFeature layerRef="TOP_COPPER">
+          <!-- VIN net: J1 pin 1 -> C1 pin 1 -->
+          <Set net="VIN">
+            <Line startX="5.0" startY="12.5" endX="5.0" endY="8.0" lineWidth="0.4"/>
+            <Line startX="5.0" startY="8.0"  endX="11.0" endY="8.0" lineWidth="0.4"/>
+          </Set>
+          <!-- VIN net: C1 pin 1 -> U1 pin 1 (IN) -->
+          <Set net="VIN">
+            <Line startX="11.0" startY="8.0"  endX="15.0" endY="8.0"  lineWidth="0.4"/>
+            <Line startX="15.0" startY="8.0"  endX="15.0" endY="13.8" lineWidth="0.4"/>
+            <Line startX="15.0" startY="13.8" endX="19.05" endY="13.8" lineWidth="0.4"/>
+          </Set>
+
+          <!-- GND net: J1 pin 2 -> C1 pin 2 (top copper portion) -->
+          <Set net="GND">
+            <Line startX="7.54" startY="12.5" endX="7.54" endY="20.0" lineWidth="0.5"/>
+            <Line startX="7.54" startY="20.0" endX="13.0" endY="20.0" lineWidth="0.5"/>
+            <Line startX="13.0" startY="20.0" endX="13.0" endY="8.0" lineWidth="0.5"/>
+          </Set>
+          <!-- GND: U1 pin 2 (GND) via to bottom -->
+          <Set net="GND">
+            <Line startX="20.0" startY="13.8" endX="20.0" endY="16.0" lineWidth="0.5"/>
+            <Pad x="20.0" y="16.0" padstackDefRef="VIA_0.8_D0.4"/>
+            <Line startX="20.0" startY="16.0" endX="20.0" endY="20.0" lineWidth="0.5"/>
+            <Line startX="20.0" startY="20.0" endX="13.0" endY="20.0" lineWidth="0.5"/>
+          </Set>
+          <!-- GND: C2 pin 2 via to bottom -->
+          <Set net="GND">
+            <Line startX="29.0" startY="8.0" endX="32.0" endY="8.0" lineWidth="0.5"/>
+            <Pad x="32.0" y="8.0" padstackDefRef="VIA_0.8_D0.4"/>
+          </Set>
+          <!-- GND: C3 pin 2 -->
+          <Set net="GND">
+            <Line startX="29.0" startY="17.0" endX="32.0" endY="17.0" lineWidth="0.5"/>
+            <Pad x="32.0" y="17.0" padstackDefRef="VIA_0.8_D0.4"/>
+          </Set>
+
+          <!-- VOUT net: U1 pin 3 (OUT) -> C2 pin 1 -->
+          <Set net="VOUT">
+            <Line startX="20.95" startY="13.8" endX="24.0" endY="13.8" lineWidth="0.3"/>
+            <Line startX="24.0"  startY="13.8" endX="24.0" endY="8.0"  lineWidth="0.3"/>
+            <Line startX="24.0"  startY="8.0"  endX="27.0" endY="8.0"  lineWidth="0.3"/>
+          </Set>
+          <!-- VOUT: U1 -> C3 pin 1 -->
+          <Set net="VOUT">
+            <Line startX="24.0"  startY="13.8" endX="24.0" endY="17.0" lineWidth="0.3"/>
+            <Line startX="24.0"  startY="17.0" endX="27.0" endY="17.0" lineWidth="0.3"/>
+          </Set>
+          <!-- VOUT: -> R1 pin 1 -->
+          <Set net="VOUT">
+            <Line startX="24.0"  startY="13.8" endX="28.0" endY="13.8" lineWidth="0.3"/>
+            <Line startX="28.0"  startY="13.8" endX="33.0" endY="11.7" lineWidth="0.3"/>
+          </Set>
+
+          <!-- LED_A net: R1 pin 2 -> D1 pin 1 (anode) -->
+          <Set net="LED_A">
+            <Line startX="33.0" startY="13.3" endX="33.0" endY="14.5" lineWidth="0.25"/>
+            <Line startX="33.0" startY="14.5" endX="35.25" endY="14.5" lineWidth="0.25"/>
+            <Line startX="35.25" startY="14.5" endX="35.25" endY="12.5" lineWidth="0.25"/>
+          </Set>
+
+          <!-- LED_K net: D1 pin 2 (cathode) -> via to bottom for R2 -->
+          <Set net="LED_K">
+            <Line startX="36.75" startY="12.5" endX="38.0" endY="12.5" lineWidth="0.25"/>
+            <Line startX="38.0"  startY="12.5" endX="38.0" endY="15.0" lineWidth="0.25"/>
+            <Pad x="38.0" y="15.0" padstackDefRef="VIA_0.6_D0.3"/>
+          </Set>
+        </LayerFeature>
+
+        <!-- ========== COPPER FEATURES: BOTTOM LAYER ========== -->
+        <LayerFeature layerRef="BOTTOM_COPPER">
+          <!-- GND ground plane fill -->
+          <Set net="GND">
+            <Polygon>
+              <PolyBegin x="1" y="1"/>
+              <PolyStepSegment x="39" y="1"/>
+              <PolyStepSegment x="39" y="24"/>
+              <PolyStepSegment x="1" y="24"/>
+              <PolyStepSegment x="1" y="1"/>
+            </Polygon>
+          </Set>
+
+          <!-- LED_K: via -> R2 pin 1 (on bottom) -->
+          <Set net="LED_K">
+            <Line startX="38.0" startY="15.0" endX="38.0" endY="18.0" lineWidth="0.25"/>
+            <Line startX="38.0" startY="18.0" endX="36.8" endY="18.0" lineWidth="0.25"/>
+          </Set>
+        </LayerFeature>
+
+        <!-- ========== SILKSCREEN: TOP ========== -->
+        <LayerFeature layerRef="TOP_SILKSCREEN">
+          <Set>
+            <!-- Board title text area indicator lines -->
+            <Line startX="10.0" startY="22.5" endX="30.0" endY="22.5" lineWidth="0.15"/>
+          </Set>
+        </LayerFeature>
+
+        <!-- ========== DOCUMENT LAYER ========== -->
+        <LayerFeature layerRef="DOCUMENT">
+          <Set>
+            <!-- Dimension lines -->
+            <Line startX="0" startY="-2" endX="40" endY="-2" lineWidth="0.1"/>
+            <Line startX="-2" startY="0" endX="-2" endY="25" lineWidth="0.1"/>
+          </Set>
+        </LayerFeature>
+
+      </Step>
+    </CadData>
+  </Ecad>
+</IPC-2581>
