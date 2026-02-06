@@ -45,6 +45,8 @@ class Ipc2581ConverterGUI:
         project_dir = script_dir.parent
 
         possible_paths = [
+            # Inside .app bundle: script is in Resources/, binary is also in Resources/
+            script_dir / "ipc2581-to-kicad",
             project_dir / "build" / "ipc2581-to-kicad",
             project_dir / "ipc2581-to-kicad",
             Path.cwd() / "ipc2581-to-kicad",
