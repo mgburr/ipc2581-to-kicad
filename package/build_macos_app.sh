@@ -274,9 +274,10 @@ cat > "$CONTENTS_DIR/Info.plist" << PLIST
 			<key>CFBundleTypeExtensions</key>
 			<array>
 				<string>xml</string>
+				<string>cvg</string>
 			</array>
 			<key>CFBundleTypeName</key>
-			<string>IPC-2581 XML File</string>
+			<string>IPC-2581 File</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
 		</dict>

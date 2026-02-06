@@ -192,9 +192,11 @@ class Ipc2581ConverterGUI:
     def _browse_input(self):
         """Open file dialog for input file selection."""
         filename = filedialog.askopenfilename(
-            title="Select IPC-2581 XML File",
+            title="Select IPC-2581 File",
             filetypes=[
+                ("IPC-2581 files", "*.xml *.cvg"),
                 ("IPC-2581 XML files", "*.xml"),
+                ("IPC-2581 CVG files", "*.cvg"),
                 ("All files", "*.*")
             ]
         )
