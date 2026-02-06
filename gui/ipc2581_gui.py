@@ -461,6 +461,18 @@ def main():
         pass
 
     app = Ipc2581ConverterGUI(root)
+
+    # If a file path was passed as argument (e.g. "Open With" from Finder),
+    # load it into the input field
+    if len(sys.argv) > 1:
+        input_path = sys.argv[1]
+        if os.path.isfile(input_path):
+            app.input_file.set(input_path)
+            base = os.path.splitext(input_path)[0]
+            app.output_file.set(base + ".kicad_pcb")
+            app._log(f"Opened: {input_path}", "info")
+            root.after(500, app._load_steps)
+
     root.mainloop()
 
 

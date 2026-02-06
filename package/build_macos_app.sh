@@ -313,7 +313,7 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 export PATH="$RESOURCES_DIR:$PATH"
 
 # Launch the GUI using python3 from PATH (prefer user-installed over system)
-exec python3 "$RESOURCES_DIR/ipc2581_gui.py"
+exec python3 "$RESOURCES_DIR/ipc2581_gui.py" "$@"
 LAUNCHER
 
 chmod +x "$MACOS_DIR/launcher"
