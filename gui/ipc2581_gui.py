@@ -462,16 +462,26 @@ def main():
 
     app = Ipc2581ConverterGUI(root)
 
-    # If a file path was passed as argument (e.g. "Open With" from Finder),
-    # load it into the input field
-    if len(sys.argv) > 1:
-        input_path = sys.argv[1]
+    def open_file(input_path):
+        """Load a file into the GUI input field."""
         if os.path.isfile(input_path):
             app.input_file.set(input_path)
             base = os.path.splitext(input_path)[0]
             app.output_file.set(base + ".kicad_pcb")
             app._log(f"Opened: {input_path}", "info")
             root.after(500, app._load_steps)
+
+    # Handle macOS "Open With" / drag-and-drop via Tk Apple Event handler.
+    # When Finder opens a file with this app, macOS sends an odoc Apple Event
+    # which Tk receives and dispatches to ::tk::mac::OpenDocument.
+    try:
+        root.createcommand('::tk::mac::OpenDocument', lambda *args: open_file(args[0]))
+    except Exception:
+        pass
+
+    # Also handle file path passed as command-line argument (direct invocation)
+    if len(sys.argv) > 1:
+        open_file(sys.argv[1])
 
     root.mainloop()
 
