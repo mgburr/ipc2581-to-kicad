@@ -289,31 +289,44 @@ PLIST
 
 echo "Creating launcher script..."
 cat > "$MACOS_DIR/launcher" << 'LAUNCHER'
-#!/bin/bash
+#!/bin/zsh
 #
 # Launcher script for IPC2581 Converter.app
 # Resolves paths inside the .app bundle and launches the Python GUI.
 #
 
-# macOS GUI apps don't inherit the user's shell PATH, so source their profile
-# to pick up python3 from Homebrew, conda, radioconda, etc.
-if [ -f "$HOME/.zprofile" ]; then
-    source "$HOME/.zprofile" 2>/dev/null
-fi
-if [ -f "$HOME/.zshrc" ]; then
-    source "$HOME/.zshrc" 2>/dev/null
-fi
-
 # Get the directory where this script lives (Contents/MacOS/)
-MACOS_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONTENTS_DIR="$(dirname "$MACOS_DIR")"
+MACOS_DIR="${0:A:h}"
+CONTENTS_DIR="${MACOS_DIR:h}"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
 # Add Resources to PATH so the GUI can find the converter binary
 export PATH="$RESOURCES_DIR:$PATH"
 
-# Launch the GUI using python3 from PATH (prefer user-installed over system)
-exec python3 "$RESOURCES_DIR/ipc2581_gui.py" "$@"
+# macOS GUI apps launched from Finder don't inherit the user's shell PATH.
+# Try to find a python3 with a working tkinter by checking common locations.
+PYTHON3=""
+for candidate in \
+    "$HOME/radioconda/bin/python3" \
+    "$HOME/miniconda3/bin/python3" \
+    "$HOME/anaconda3/bin/python3" \
+    "$HOME/miniforge3/bin/python3" \
+    "$HOME/mambaforge/bin/python3" \
+    "/usr/local/bin/python3" \
+    "/opt/homebrew/bin/python3" \
+    "/usr/bin/python3"; do
+    if [ -x "$candidate" ]; then
+        PYTHON3="$candidate"
+        break
+    fi
+done
+
+if [ -z "$PYTHON3" ]; then
+    osascript -e 'display alert "Python 3 not found" message "IPC2581 Converter requires Python 3 with tkinter. Please install Python 3." as critical'
+    exit 1
+fi
+
+exec "$PYTHON3" "$RESOURCES_DIR/ipc2581_gui.py" "$@"
 LAUNCHER
 
 chmod +x "$MACOS_DIR/launcher"
