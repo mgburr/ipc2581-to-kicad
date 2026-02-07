@@ -98,6 +98,32 @@ std::string ModelMapper::try_direct(const std::string& name) const {
     if (name == "QFN-16" || name == "QFN-16-1EP_3x3mm_P0.5mm")
         return "Package_DFN_QFN.3dshapes/QFN-16-1EP_3x3mm_P0.5mm.step";
 
+    // Tactile / push button switches (manufacturer part numbers)
+    // E-Switch TL1014 series — 6x6mm tactile switch
+    if (name.rfind("TL1014", 0) == 0 || name.rfind("TL3301", 0) == 0)
+        return "Button_Switch_SMD.3dshapes/SW_Push_1P1T_NO_E-Switch_TL3301NxxxxxG.step";
+    // Generic 6x6mm tactile switches
+    if (name.rfind("SW_Push_6x6", 0) == 0 || name.rfind("TACT_6", 0) == 0)
+        return "Button_Switch_SMD.3dshapes/SW_Push_1TS009xxxx-xxxx-xxxx_6x6x5mm.step";
+    // CUI GRPB push button switch
+    if (name.rfind("GRPB", 0) == 0)
+        return "Button_Switch_SMD.3dshapes/SW_Push_1P1T_NO_E-Switch_TL3301NxxxxxG.step";
+
+    // Hirose FH12 FPC connectors: extract pin count from name
+    {
+        static const std::regex re_fh12(R"(FH12[\-]?(\d+)S)", std::regex::icase);
+        std::smatch fm;
+        std::string search_name = name;
+        // Strip CON- prefix for matching
+        if (search_name.rfind("CON-", 0) == 0)
+            search_name = search_name.substr(4);
+        if (std::regex_search(search_name, fm, re_fh12)) {
+            std::string pins = fm[1].str();
+            return "Connector_FFC-FPC.3dshapes/Hirose_FH12-" + pins +
+                   "S-0.5SH_1x" + pins + "-1MP_P0.50mm_Horizontal.step";
+        }
+    }
+
     return {};
 }
 
