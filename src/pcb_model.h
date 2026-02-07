@@ -65,6 +65,8 @@ struct ComponentInstance {
     bool mirror = false;   // bottom side placement
     // Pin-to-net mapping: pad_name -> net_name
     std::map<std::string, std::string> pin_net_map;
+    // Per-pin local rotation (footprint-relative): pad_name -> degrees
+    std::map<std::string, double> pin_rotation_map;
 };
 
 struct TraceSegment {

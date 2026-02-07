@@ -92,6 +92,7 @@ bool Ipc2581Parser::parse(const std::string& filename, PcbModel& model) {
     parse_profile(step, model);
     parse_packages(step, model);
     parse_components(step, model);
+    parse_padstack_rotations(step, model);
     parse_layer_features(step, model);
 
     log("Parse complete: " + std::to_string(model.components.size()) + " components, " +
@@ -791,6 +792,75 @@ void Ipc2581Parser::parse_components(const pugi::xml_node& step, PcbModel& model
     }
 
     log("Parsed " + std::to_string(model.components.size()) + " component instances");
+}
+
+// --- PadStack Rotation Extraction ---
+
+void Ipc2581Parser::parse_padstack_rotations(const pugi::xml_node& step, PcbModel& model) {
+    // Build a set of copper layer names for filtering
+    std::set<std::string> copper_layers;
+    for (auto& l : model.layers) {
+        std::string func = l.ipc_function;
+        std::transform(func.begin(), func.end(), func.begin(), ::toupper);
+        if (func == "SIGNAL" || func == "POWER_GROUND" || func == "POWER" ||
+            func == "GROUND" || func == "MIXED") {
+            copper_layers.insert(l.ipc_name);
+        }
+    }
+
+    // Build a lookup for component rotation by refdes
+    std::map<std::string, double> comp_rotation;
+    for (auto& ci : model.components) {
+        comp_rotation[ci.refdes] = ci.rotation;
+    }
+
+    int count = 0;
+    for (auto ps : step.children("PadStack")) {
+        for (auto lp : ps.children("LayerPad")) {
+            std::string layer_ref = lp.attribute("layerRef").as_string();
+
+            // Only process copper layers to avoid duplicate entries
+            if (copper_layers.find(layer_ref) == copper_layers.end())
+                continue;
+
+            auto xform = lp.child("Xform");
+            if (!xform) continue;
+
+            double abs_rotation = parse_double(xform.attribute("rotation").as_string());
+            if (abs_rotation == 0.0) continue;
+
+            auto pin_ref = lp.child("PinRef");
+            if (!pin_ref) continue;
+
+            std::string comp_ref = pin_ref.attribute("componentRef").as_string();
+            std::string pin = pin_ref.attribute("pin").as_string();
+            if (comp_ref.empty() || pin.empty()) continue;
+
+            auto rot_it = comp_rotation.find(comp_ref);
+            if (rot_it == comp_rotation.end()) continue;
+
+            double comp_rot = rot_it->second;
+            double local_rotation = std::fmod(abs_rotation - comp_rot + 360.0, 360.0);
+
+            // Convert IPC rotation convention (CCW) to KiCad (CW)
+            local_rotation = std::fmod(360.0 - local_rotation, 360.0);
+
+            if (local_rotation == 0.0) continue;
+
+            // Store on the matching component instance
+            for (auto& ci : model.components) {
+                if (ci.refdes == comp_ref) {
+                    ci.pin_rotation_map[pin] = local_rotation;
+                    count++;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (count > 0) {
+        log("Extracted " + std::to_string(count) + " per-pad rotations from PadStack data");
+    }
 }
 
 // --- Layer Feature Parsing ---

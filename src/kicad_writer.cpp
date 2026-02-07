@@ -546,7 +546,12 @@ void KicadWriter::write_footprint(std::ostream& out, const PcbModel& model,
 
     // Pads
     for (auto& pad : fp.pads) {
-        write_pad(out, pad, comp, model);
+        PadDef adjusted_pad = pad;
+        auto rot_it = comp.pin_rotation_map.find(pad.name);
+        if (rot_it != comp.pin_rotation_map.end()) {
+            adjusted_pad.rotation = rot_it->second;
+        }
+        write_pad(out, adjusted_pad, comp, model);
     }
 
     // 3D model
