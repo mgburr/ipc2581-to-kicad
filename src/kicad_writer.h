@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pcb_model.h"
+#include "model_mapper.h"
 #include <string>
 #include <ostream>
 
@@ -8,11 +9,12 @@ namespace ipc2kicad {
 
 enum class KiCadVersion {
     V7,  // KiCad 7.x format
-    V8   // KiCad 8.x format
+    V8,  // KiCad 8.x format
+    V9   // KiCad 9.x format
 };
 
 struct WriterOptions {
-    KiCadVersion version = KiCadVersion::V8;
+    KiCadVersion version = KiCadVersion::V9;
     bool verbose = false;
 };
 
@@ -28,7 +30,13 @@ public:
 
 private:
     WriterOptions opts_;
+    ModelMapper model_mapper_;
     int indent_ = 0;
+
+    // Version helpers
+    bool has_uuids() const { return opts_.version == KiCadVersion::V8 || opts_.version == KiCadVersion::V9; }
+    std::string uuid_fmt(const std::string& seed) const;
+    int layer_id(int v78_id) const;
 
     // Section writers
     void write_header(std::ostream& out);

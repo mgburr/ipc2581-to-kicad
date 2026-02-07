@@ -12,6 +12,13 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from pathlib import Path
 
+# Ensure sibling modules are importable regardless of working directory
+sys.path.insert(0, str(Path(__file__).parent.resolve()))
+
+from pcb_data import PcbData
+from pcb_viewer_2d import PcbViewer2D
+from pcb_viewer_3d import PcbViewer3D
+
 
 class Ipc2581ConverterGUI:
     def __init__(self, root):
@@ -26,7 +33,7 @@ class Ipc2581ConverterGUI:
         # Variables
         self.input_file = tk.StringVar()
         self.output_file = tk.StringVar()
-        self.kicad_version = tk.StringVar(value="8")
+        self.kicad_version = tk.StringVar(value="9")
         self.selected_step = tk.StringVar()
         self.verbose = tk.BooleanVar(value=True)
         self.available_steps = []
@@ -121,7 +128,9 @@ class Ipc2581ConverterGUI:
         ttk.Radiobutton(version_frame, text="KiCad 7", variable=self.kicad_version,
                         value="7").pack(side="left", padx=(0, 10))
         ttk.Radiobutton(version_frame, text="KiCad 8", variable=self.kicad_version,
-                        value="8").pack(side="left")
+                        value="8").pack(side="left", padx=(0, 10))
+        ttk.Radiobutton(version_frame, text="KiCad 9", variable=self.kicad_version,
+                        value="9").pack(side="left")
 
         # Step Selection
         ttk.Label(options_frame, text="Step:").grid(row=1, column=0, sticky="w", pady=2)
@@ -151,6 +160,14 @@ class Ipc2581ConverterGUI:
 
         ttk.Button(button_frame, text="List Layers",
                    command=self._list_layers).pack(side="left", padx=5)
+
+        self.viewer_2d_btn = ttk.Button(button_frame, text="2D Viewer",
+                                         command=self._open_2d_viewer)
+        self.viewer_2d_btn.pack(side="left", padx=5)
+
+        self.viewer_3d_btn = ttk.Button(button_frame, text="3D View",
+                                         command=self._open_3d_viewer)
+        self.viewer_3d_btn.pack(side="left", padx=5)
 
         ttk.Button(button_frame, text="Clear Log",
                    command=self._clear_log).pack(side="left", padx=5)
@@ -405,6 +422,68 @@ class Ipc2581ConverterGUI:
         self._log(f"Error: {error_msg}", "error")
         self._set_status("Error")
         messagebox.showerror("Error", f"Conversion error:\n{error_msg}")
+
+    def _get_selected_step(self):
+        """Return the selected step name, or None for default."""
+        step = self.selected_step.get()
+        if step and step not in ["(first step - default)",
+                                  "(auto-detect from file)",
+                                  "(no steps found)"]:
+            return step
+        return None
+
+    def _open_2d_viewer(self):
+        """Export JSON and open the 2D viewer."""
+        self._open_viewer("2D")
+
+    def _open_3d_viewer(self):
+        """Export JSON and open the 3D viewer."""
+        self._open_viewer("3D")
+
+    def _open_viewer(self, mode):
+        """Run --export-json in background, then open the viewer window."""
+        if not self.converter_path:
+            messagebox.showerror("Error", "Converter executable not found!")
+            return
+
+        input_path = self.input_file.get()
+        if not input_path or not os.path.exists(input_path):
+            messagebox.showerror("Error", "Please select a valid input file first")
+            return
+
+        self._log(f"Loading PCB data for {mode} viewer...", "info")
+        self._set_status(f"Exporting JSON for {mode} viewer...")
+        self.progress.start(10)
+
+        def run():
+            try:
+                pcb = PcbData()
+                pcb.load_from_file(self.converter_path, input_path,
+                                   step=self._get_selected_step())
+                self.root.after(0, lambda: self._viewer_ready(pcb, mode))
+            except Exception as e:
+                self.root.after(0, lambda: self._viewer_error(str(e)))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _viewer_ready(self, pcb, mode):
+        """Called on main thread when JSON data is ready."""
+        self.progress.stop()
+        self._set_status("Ready")
+        self._log(f"{mode} viewer data loaded: {len(pcb.components)} components, "
+                  f"{len(pcb.traces)} traces", "success")
+
+        if mode == "2D":
+            PcbViewer2D(self.root, pcb)
+        else:
+            PcbViewer3D(self.root, pcb)
+
+    def _viewer_error(self, error_msg):
+        """Called on main thread if JSON export fails."""
+        self.progress.stop()
+        self._set_status("Ready")
+        self._log(f"Viewer error: {error_msg}", "error")
+        messagebox.showerror("Viewer Error", error_msg)
 
     def _show_result(self, result, success_msg):
         """Show command result in log."""

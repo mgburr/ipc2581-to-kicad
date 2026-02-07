@@ -72,8 +72,11 @@ mkdir -p "$RESOURCES_DIR"
 echo "Copying converter binary..."
 cp "$CONVERTER_BIN" "$RESOURCES_DIR/"
 
-echo "Copying GUI script..."
+echo "Copying GUI scripts..."
 cp "$GUI_SCRIPT" "$RESOURCES_DIR/"
+cp "$PROJECT_DIR/gui/pcb_data.py" "$RESOURCES_DIR/"
+cp "$PROJECT_DIR/gui/pcb_viewer_2d.py" "$RESOURCES_DIR/"
+cp "$PROJECT_DIR/gui/pcb_viewer_3d.py" "$RESOURCES_DIR/"
 
 # --- Generate app icon ---
 
@@ -303,6 +306,9 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
 # Add Resources to PATH so the GUI can find the converter binary
 export PATH="$RESOURCES_DIR:$PATH"
+
+# Add Resources to PYTHONPATH so the GUI can import sibling modules
+export PYTHONPATH="$RESOURCES_DIR:${PYTHONPATH:-}"
 
 # macOS GUI apps launched from Finder don't inherit the user's shell PATH.
 # Try to find a python3 with a working tkinter by checking common locations.

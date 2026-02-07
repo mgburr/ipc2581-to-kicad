@@ -6,6 +6,7 @@
 #include <iostream>
 #include <sstream>
 #include <set>
+#include <map>
 #include <algorithm>
 
 namespace ipc2kicad {
@@ -56,7 +57,10 @@ bool KicadWriter::write(std::ostream& out, const PcbModel& model) {
 // --- Header ---
 
 void KicadWriter::write_header(std::ostream& out) {
-    if (opts_.version == KiCadVersion::V8) {
+    if (opts_.version == KiCadVersion::V9) {
+        out << "(version 20241229) (generator \"ipc2581_to_kicad\") "
+               "(generator_version \"1.0\")";
+    } else if (opts_.version == KiCadVersion::V8) {
         out << "(version 20240108) (generator \"ipc2581_to_kicad\") "
                "(generator_version \"1.0\")";
     } else {
@@ -69,7 +73,7 @@ void KicadWriter::write_header(std::ostream& out) {
 void KicadWriter::write_general(std::ostream& out, const PcbModel& model) {
     out << "  (general\n";
     out << "    (thickness " << fmt(model.stackup.board_thickness) << ")\n";
-    if (opts_.version == KiCadVersion::V8) {
+    if (has_uuids()) {
         out << "    (legacy_teardrops no)\n";
     }
     out << "  )\n\n";
@@ -86,44 +90,84 @@ void KicadWriter::write_paper(std::ostream& out) {
 void KicadWriter::write_layers(std::ostream& out, const PcbModel& model) {
     out << "  (layers\n";
 
-    // Collect unique KiCad layers
-    std::set<int> written_ids;
+    if (opts_.version == KiCadVersion::V9) {
+        // KiCad 9 uses completely renumbered layer IDs
+        std::set<int> written_ids;
 
-    // Always write F.Cu and B.Cu
-    out << "    (0 \"F.Cu\" signal)\n";
-    written_ids.insert(0);
+        out << "    (0 \"F.Cu\" signal)\n";
+        written_ids.insert(0);
 
-    // Inner copper layers
-    for (auto& l : model.layers) {
-        if (l.kicad_id > 0 && l.kicad_id < 31 && l.type == "signal") {
-            if (written_ids.insert(l.kicad_id).second) {
-                out << "    (" << l.kicad_id << " \"" << l.kicad_name << "\" signal)\n";
+        // Inner copper layers: V9 uses even IDs starting from 4
+        for (auto& l : model.layers) {
+            if (l.kicad_id > 0 && l.kicad_id < 31 && l.type == "signal") {
+                int v9_id = l.kicad_id * 2 + 2;
+                if (written_ids.insert(v9_id).second) {
+                    out << "    (" << v9_id << " \"" << l.kicad_name << "\" signal)\n";
+                }
             }
         }
+
+        out << "    (2 \"B.Cu\" signal)\n";
+        written_ids.insert(2);
+
+        // Non-copper layers with V9 IDs
+        out << "    (1 \"F.Mask\" user)\n";
+        out << "    (3 \"B.Mask\" user)\n";
+        out << "    (5 \"F.SilkS\" user \"F.Silkscreen\")\n";
+        out << "    (7 \"B.SilkS\" user \"B.Silkscreen\")\n";
+        out << "    (9 \"F.Adhes\" user \"F.Adhesive\")\n";
+        out << "    (11 \"B.Adhes\" user \"B.Adhesive\")\n";
+        out << "    (13 \"F.Paste\" user)\n";
+        out << "    (15 \"B.Paste\" user)\n";
+        out << "    (17 \"Dwgs.User\" user \"User.Drawings\")\n";
+        out << "    (19 \"Cmts.User\" user \"User.Comments\")\n";
+        out << "    (21 \"Eco1.User\" user \"User.Eco1\")\n";
+        out << "    (23 \"Eco2.User\" user \"User.Eco2\")\n";
+        out << "    (25 \"Edge.Cuts\" user)\n";
+        out << "    (27 \"Margin\" user)\n";
+        out << "    (29 \"B.CrtYd\" user \"B.Courtyard\")\n";
+        out << "    (31 \"F.CrtYd\" user \"F.Courtyard\")\n";
+        out << "    (33 \"B.Fab\" user)\n";
+        out << "    (35 \"F.Fab\" user)\n";
+    } else {
+        // V7/V8 layer numbering
+        std::set<int> written_ids;
+
+        out << "    (0 \"F.Cu\" signal)\n";
+        written_ids.insert(0);
+
+        // Inner copper layers
+        for (auto& l : model.layers) {
+            if (l.kicad_id > 0 && l.kicad_id < 31 && l.type == "signal") {
+                if (written_ids.insert(l.kicad_id).second) {
+                    out << "    (" << l.kicad_id << " \"" << l.kicad_name << "\" signal)\n";
+                }
+            }
+        }
+
+        out << "    (31 \"B.Cu\" signal)\n";
+        written_ids.insert(31);
+
+        // Non-copper layers (standard set)
+        out << "    (32 \"B.Adhes\" user \"B.Adhesive\")\n";
+        out << "    (33 \"F.Adhes\" user \"F.Adhesive\")\n";
+        out << "    (34 \"B.Paste\" user)\n";
+        out << "    (35 \"F.Paste\" user)\n";
+        out << "    (36 \"B.SilkS\" user \"B.Silkscreen\")\n";
+        out << "    (37 \"F.SilkS\" user \"F.Silkscreen\")\n";
+        out << "    (38 \"B.Mask\" user)\n";
+        out << "    (39 \"F.Mask\" user)\n";
+        out << "    (40 \"Dwgs.User\" user \"User.Drawings\")\n";
+        out << "    (41 \"Cmts.User\" user \"User.Comments\")\n";
+        out << "    (42 \"Eco1.User\" user \"User.Eco1\")\n";
+        out << "    (43 \"Eco2.User\" user \"User.Eco2\")\n";
+        out << "    (44 \"Edge.Cuts\" user)\n";
+        out << "    (45 \"Margin\" user)\n";
+        out << "    (46 \"B.CrtYd\" user \"B.Courtyard\")\n";
+        out << "    (47 \"F.CrtYd\" user \"F.Courtyard\")\n";
+        out << "    (48 \"B.Fab\" user)\n";
+        out << "    (49 \"F.Fab\" user)\n";
     }
-
-    out << "    (31 \"B.Cu\" signal)\n";
-    written_ids.insert(31);
-
-    // Non-copper layers (standard set)
-    out << "    (32 \"B.Adhes\" user \"B.Adhesive\")\n";
-    out << "    (33 \"F.Adhes\" user \"F.Adhesive\")\n";
-    out << "    (34 \"B.Paste\" user)\n";
-    out << "    (35 \"F.Paste\" user)\n";
-    out << "    (36 \"B.SilkS\" user \"B.Silkscreen\")\n";
-    out << "    (37 \"F.SilkS\" user \"F.Silkscreen\")\n";
-    out << "    (38 \"B.Mask\" user)\n";
-    out << "    (39 \"F.Mask\" user)\n";
-    out << "    (40 \"Dwgs.User\" user \"User.Drawings\")\n";
-    out << "    (41 \"Cmts.User\" user \"User.Comments\")\n";
-    out << "    (42 \"Eco1.User\" user \"User.Eco1\")\n";
-    out << "    (43 \"Eco2.User\" user \"User.Eco2\")\n";
-    out << "    (44 \"Edge.Cuts\" user)\n";
-    out << "    (45 \"Margin\" user)\n";
-    out << "    (46 \"B.CrtYd\" user \"B.Courtyard\")\n";
-    out << "    (47 \"F.CrtYd\" user \"F.Courtyard\")\n";
-    out << "    (48 \"B.Fab\" user)\n";
-    out << "    (49 \"F.Fab\" user)\n";
 
     out << "  )\n\n";
 }
@@ -139,39 +183,90 @@ void KicadWriter::write_setup(std::ostream& out, const PcbModel& model) {
     }
 
     out << "    (pad_to_mask_clearance 0)\n";
+
+    if (opts_.version == KiCadVersion::V9) {
+        out << "    (allow_soldermask_bridges_in_footprints no)\n";
+        out << "    (tenting front back)\n";
+    }
+
     out << "    (pcbplotparams\n";
-    out << "      (usegerberextensions false)\n";
-    out << "      (usegerberattributes true)\n";
-    out << "      (usegerberadvancedattributes true)\n";
-    out << "      (creategerberjobfile true)\n";
-    out << "      (dashed_line_dash_ratio 12.000000)\n";
-    out << "      (dashed_line_gap_ratio 3.000000)\n";
-    out << "      (svgprecision 4)\n";
-    out << "      (plotframeref false)\n";
-    out << "      (viasonmask false)\n";
-    out << "      (mode 1)\n";
-    out << "      (useauxorigin false)\n";
-    out << "      (hpglpennumber 1)\n";
-    out << "      (hpglpenspeed 20)\n";
-    out << "      (hpglpendiameter 15.000000)\n";
-    out << "      (pdf_front_fp_property_popups true)\n";
-    out << "      (pdf_back_fp_property_popups true)\n";
-    out << "      (dxfpolygonmode true)\n";
-    out << "      (dxfimperialunits true)\n";
-    out << "      (dxfusepcbnewfont true)\n";
-    out << "      (psnegative false)\n";
-    out << "      (psa4output false)\n";
-    out << "      (plotreference true)\n";
-    out << "      (plotvalue true)\n";
-    out << "      (plotfptext true)\n";
-    out << "      (plotinvisibletext false)\n";
-    out << "      (sketchpadsonfab false)\n";
-    out << "      (subtractmaskfromsilk false)\n";
-    out << "      (outputformat 1)\n";
-    out << "      (mirror false)\n";
-    out << "      (drillshape 1)\n";
-    out << "      (scaleselection 1)\n";
-    out << "      (outputdirectory \"\")\n";
+
+    if (opts_.version == KiCadVersion::V9) {
+        // V9 pcbplotparams
+        out << "      (layerselection 0x00010fc_ffffffff)\n";
+        out << "      (plot_on_all_layers_selection 0x0000000_00000000)\n";
+        out << "      (disableapertmacros no)\n";
+        out << "      (usegerberextensions false)\n";
+        out << "      (usegerberattributes true)\n";
+        out << "      (usegerberadvancedattributes true)\n";
+        out << "      (creategerberjobfile true)\n";
+        out << "      (dashed_line_dash_ratio 12.000000)\n";
+        out << "      (dashed_line_gap_ratio 3.000000)\n";
+        out << "      (svgprecision 4)\n";
+        out << "      (plotframeref false)\n";
+        out << "      (mode 1)\n";
+        out << "      (useauxorigin false)\n";
+        out << "      (hpglpennumber 1)\n";
+        out << "      (hpglpenspeed 20)\n";
+        out << "      (hpglpendiameter 15.000000)\n";
+        out << "      (pdf_front_fp_property_popups true)\n";
+        out << "      (pdf_back_fp_property_popups true)\n";
+        out << "      (pdf_metadata yes)\n";
+        out << "      (pdf_single_document no)\n";
+        out << "      (dxfpolygonmode true)\n";
+        out << "      (dxfimperialunits true)\n";
+        out << "      (dxfusepcbnewfont true)\n";
+        out << "      (psnegative false)\n";
+        out << "      (psa4output false)\n";
+        out << "      (plotinvisibletext false)\n";
+        out << "      (sketchpadsonfab false)\n";
+        out << "      (subtractmaskfromsilk false)\n";
+        out << "      (outputformat 1)\n";
+        out << "      (mirror false)\n";
+        out << "      (drillshape 1)\n";
+        out << "      (scaleselection 1)\n";
+        out << "      (plot_black_and_white yes)\n";
+        out << "      (plotpadnumbers no)\n";
+        out << "      (hidednponfab no)\n";
+        out << "      (sketchdnponfab yes)\n";
+        out << "      (crossoutdnponfab yes)\n";
+        out << "      (outputdirectory \"\")\n";
+    } else {
+        // V7/V8 pcbplotparams
+        out << "      (usegerberextensions false)\n";
+        out << "      (usegerberattributes true)\n";
+        out << "      (usegerberadvancedattributes true)\n";
+        out << "      (creategerberjobfile true)\n";
+        out << "      (dashed_line_dash_ratio 12.000000)\n";
+        out << "      (dashed_line_gap_ratio 3.000000)\n";
+        out << "      (svgprecision 4)\n";
+        out << "      (plotframeref false)\n";
+        out << "      (viasonmask false)\n";
+        out << "      (mode 1)\n";
+        out << "      (useauxorigin false)\n";
+        out << "      (hpglpennumber 1)\n";
+        out << "      (hpglpenspeed 20)\n";
+        out << "      (hpglpendiameter 15.000000)\n";
+        out << "      (pdf_front_fp_property_popups true)\n";
+        out << "      (pdf_back_fp_property_popups true)\n";
+        out << "      (dxfpolygonmode true)\n";
+        out << "      (dxfimperialunits true)\n";
+        out << "      (dxfusepcbnewfont true)\n";
+        out << "      (psnegative false)\n";
+        out << "      (psa4output false)\n";
+        out << "      (plotreference true)\n";
+        out << "      (plotvalue true)\n";
+        out << "      (plotfptext true)\n";
+        out << "      (plotinvisibletext false)\n";
+        out << "      (sketchpadsonfab false)\n";
+        out << "      (subtractmaskfromsilk false)\n";
+        out << "      (outputformat 1)\n";
+        out << "      (mirror false)\n";
+        out << "      (drillshape 1)\n";
+        out << "      (scaleselection 1)\n";
+        out << "      (outputdirectory \"\")\n";
+    }
+
     out << "    )\n";
     out << "  )\n\n";
 }
@@ -244,8 +339,8 @@ void KicadWriter::write_footprint(std::ostream& out, const PcbModel& model,
 
     out << "  (footprint \"ipc2581:" << fp.name << "\"\n";
     out << "    (layer \"" << layer << "\")\n";
-    if (opts_.version == KiCadVersion::V8) {
-        out << "    (uuid " << uuid_from("fp_" + comp.refdes) << ")\n";
+    if (has_uuids()) {
+        out << "    (uuid " << uuid_fmt("fp_" + comp.refdes) << ")\n";
     }
     out << "    (at " << fmt(comp.position.x) << " " << fmt(comp.position.y);
     if (comp.rotation != 0.0) {
@@ -257,8 +352,8 @@ void KicadWriter::write_footprint(std::ostream& out, const PcbModel& model,
     out << "    (property \"Reference\" " << sexp_quote(comp.refdes) << "\n";
     out << "      (at 0 -2 0)\n";
     out << "      (layer \"" << (comp.mirror ? "B.SilkS" : "F.SilkS") << "\")\n";
-    if (opts_.version == KiCadVersion::V8) {
-        out << "      (uuid " << uuid_from("ref_" + comp.refdes) << ")\n";
+    if (has_uuids()) {
+        out << "      (uuid " << uuid_fmt("ref_" + comp.refdes) << ")\n";
     }
     out << "      (effects (font (size 1 1) (thickness 0.15)))\n";
     out << "    )\n";
@@ -266,8 +361,8 @@ void KicadWriter::write_footprint(std::ostream& out, const PcbModel& model,
     out << "    (property \"Value\" " << sexp_quote(comp.value.empty() ? fp.name : comp.value) << "\n";
     out << "      (at 0 2 0)\n";
     out << "      (layer \"" << (comp.mirror ? "B.Fab" : "F.Fab") << "\")\n";
-    if (opts_.version == KiCadVersion::V8) {
-        out << "      (uuid " << uuid_from("val_" + comp.refdes) << ")\n";
+    if (has_uuids()) {
+        out << "      (uuid " << uuid_fmt("val_" + comp.refdes) << ")\n";
     }
     out << "      (effects (font (size 1 1) (thickness 0.15)))\n";
     out << "    )\n";
@@ -276,11 +371,31 @@ void KicadWriter::write_footprint(std::ostream& out, const PcbModel& model,
     out << "      (at 0 0 0)\n";
     out << "      (layer \"" << (comp.mirror ? "B.Fab" : "F.Fab") << "\")\n";
     out << "      (hide yes)\n";
-    if (opts_.version == KiCadVersion::V8) {
-        out << "      (uuid " << uuid_from("fprop_" + comp.refdes) << ")\n";
+    if (has_uuids()) {
+        out << "      (uuid " << uuid_fmt("fprop_" + comp.refdes) << ")\n";
     }
     out << "      (effects (font (size 1.27 1.27) (thickness 0.15)))\n";
     out << "    )\n";
+
+    if (opts_.version == KiCadVersion::V9) {
+        out << "    (property \"Datasheet\" \"\"\n";
+        out << "      (at 0 0 0)\n";
+        out << "      (unlocked yes)\n";
+        out << "      (layer \"" << (comp.mirror ? "B.Fab" : "F.Fab") << "\")\n";
+        out << "      (hide yes)\n";
+        out << "      (uuid " << uuid_fmt("ds_" + comp.refdes) << ")\n";
+        out << "      (effects (font (size 1.27 1.27) (thickness 0.15)))\n";
+        out << "    )\n";
+
+        out << "    (property \"Description\" \"\"\n";
+        out << "      (at 0 0 0)\n";
+        out << "      (unlocked yes)\n";
+        out << "      (layer \"" << (comp.mirror ? "B.Fab" : "F.Fab") << "\")\n";
+        out << "      (hide yes)\n";
+        out << "      (uuid " << uuid_fmt("desc_" + comp.refdes) << ")\n";
+        out << "      (effects (font (size 1.27 1.27) (thickness 0.15)))\n";
+        out << "    )\n";
+    }
 
     // Footprint graphics (silkscreen, fab, courtyard lines)
     for (size_t i = 0; i < fp.graphics.size(); i++) {
@@ -298,8 +413,8 @@ void KicadWriter::write_footprint(std::ostream& out, const PcbModel& model,
                 << " (end " << fmt(gi.end.x) << " " << fmt(gi.end.y) << ")"
                 << " (stroke (width " << fmt(gi.width) << ") (type solid))"
                 << " (layer \"" << glayer << "\")";
-            if (opts_.version == KiCadVersion::V8) {
-                out << " (uuid " << uuid_from("fpline_" + comp.refdes + "_" + std::to_string(i)) << ")";
+            if (has_uuids()) {
+                out << " (uuid " << uuid_fmt("fpline_" + comp.refdes + "_" + std::to_string(i)) << ")";
             }
             out << ")\n";
         } else if (gi.kind == GraphicItem::ARC) {
@@ -308,16 +423,143 @@ void KicadWriter::write_footprint(std::ostream& out, const PcbModel& model,
                 << " (end " << fmt(gi.end.x) << " " << fmt(gi.end.y) << ")"
                 << " (stroke (width " << fmt(gi.width) << ") (type solid))"
                 << " (layer \"" << glayer << "\")";
-            if (opts_.version == KiCadVersion::V8) {
-                out << " (uuid " << uuid_from("fparc_" + comp.refdes + "_" + std::to_string(i)) << ")";
+            if (has_uuids()) {
+                out << " (uuid " << uuid_fmt("fparc_" + comp.refdes + "_" + std::to_string(i)) << ")";
             }
             out << ")\n";
+        }
+    }
+
+    // Auto-generate courtyard and fab outlines from pad bounding box
+    // if the footprint doesn't already have them
+    if (!fp.pads.empty()) {
+        bool has_crtyd = false;
+        bool has_fab = false;
+        for (auto& gi : fp.graphics) {
+            if (gi.layer == "F.CrtYd" || gi.layer == "B.CrtYd") has_crtyd = true;
+            if (gi.layer == "F.Fab" || gi.layer == "B.Fab") has_fab = true;
+        }
+
+        if (!has_crtyd || !has_fab) {
+            // Compute pad bounding box (in footprint-local coordinates)
+            double px_min = 1e9, px_max = -1e9, py_min = 1e9, py_max = -1e9;
+            for (auto& pad : fp.pads) {
+                double pw = (pad.width > 0) ? pad.width : 0.5;
+                double ph = (pad.height > 0) ? pad.height : 0.5;
+                double x0 = pad.offset.x - pw / 2;
+                double x1 = pad.offset.x + pw / 2;
+                double y0 = pad.offset.y - ph / 2;
+                double y1 = pad.offset.y + ph / 2;
+                if (x0 < px_min) px_min = x0;
+                if (x1 > px_max) px_max = x1;
+                if (y0 < py_min) py_min = y0;
+                if (y1 > py_max) py_max = y1;
+            }
+
+            if (!has_fab) {
+                // Fab outline: tight rectangle around pads with 0.1mm margin
+                double fab_margin = 0.1;
+                double fx0 = px_min - fab_margin;
+                double fy0 = py_min - fab_margin;
+                double fx1 = px_max + fab_margin;
+                double fy1 = py_max + fab_margin;
+                std::string fab_layer = comp.mirror ? "B.Fab" : "F.Fab";
+
+                out << "    (fp_line (start " << fmt(fx0) << " " << fmt(fy0) << ")"
+                    << " (end " << fmt(fx1) << " " << fmt(fy0) << ")"
+                    << " (stroke (width 0.1) (type solid))"
+                    << " (layer \"" << fab_layer << "\")";
+                if (has_uuids()) {
+                    out << " (uuid " << uuid_fmt("fab0_" + comp.refdes) << ")";
+                }
+                out << ")\n";
+                out << "    (fp_line (start " << fmt(fx1) << " " << fmt(fy0) << ")"
+                    << " (end " << fmt(fx1) << " " << fmt(fy1) << ")"
+                    << " (stroke (width 0.1) (type solid))"
+                    << " (layer \"" << fab_layer << "\")";
+                if (has_uuids()) {
+                    out << " (uuid " << uuid_fmt("fab1_" + comp.refdes) << ")";
+                }
+                out << ")\n";
+                out << "    (fp_line (start " << fmt(fx1) << " " << fmt(fy1) << ")"
+                    << " (end " << fmt(fx0) << " " << fmt(fy1) << ")"
+                    << " (stroke (width 0.1) (type solid))"
+                    << " (layer \"" << fab_layer << "\")";
+                if (has_uuids()) {
+                    out << " (uuid " << uuid_fmt("fab2_" + comp.refdes) << ")";
+                }
+                out << ")\n";
+                out << "    (fp_line (start " << fmt(fx0) << " " << fmt(fy1) << ")"
+                    << " (end " << fmt(fx0) << " " << fmt(fy0) << ")"
+                    << " (stroke (width 0.1) (type solid))"
+                    << " (layer \"" << fab_layer << "\")";
+                if (has_uuids()) {
+                    out << " (uuid " << uuid_fmt("fab3_" + comp.refdes) << ")";
+                }
+                out << ")\n";
+            }
+
+            if (!has_crtyd) {
+                // Courtyard outline: larger rectangle with 0.25mm margin
+                double crt_margin = 0.25;
+                double cx0 = px_min - crt_margin;
+                double cy0 = py_min - crt_margin;
+                double cx1 = px_max + crt_margin;
+                double cy1 = py_max + crt_margin;
+                std::string crt_layer = comp.mirror ? "B.CrtYd" : "F.CrtYd";
+
+                out << "    (fp_line (start " << fmt(cx0) << " " << fmt(cy0) << ")"
+                    << " (end " << fmt(cx1) << " " << fmt(cy0) << ")"
+                    << " (stroke (width 0.05) (type solid))"
+                    << " (layer \"" << crt_layer << "\")";
+                if (has_uuids()) {
+                    out << " (uuid " << uuid_fmt("crt0_" + comp.refdes) << ")";
+                }
+                out << ")\n";
+                out << "    (fp_line (start " << fmt(cx1) << " " << fmt(cy0) << ")"
+                    << " (end " << fmt(cx1) << " " << fmt(cy1) << ")"
+                    << " (stroke (width 0.05) (type solid))"
+                    << " (layer \"" << crt_layer << "\")";
+                if (has_uuids()) {
+                    out << " (uuid " << uuid_fmt("crt1_" + comp.refdes) << ")";
+                }
+                out << ")\n";
+                out << "    (fp_line (start " << fmt(cx1) << " " << fmt(cy1) << ")"
+                    << " (end " << fmt(cx0) << " " << fmt(cy1) << ")"
+                    << " (stroke (width 0.05) (type solid))"
+                    << " (layer \"" << crt_layer << "\")";
+                if (has_uuids()) {
+                    out << " (uuid " << uuid_fmt("crt2_" + comp.refdes) << ")";
+                }
+                out << ")\n";
+                out << "    (fp_line (start " << fmt(cx0) << " " << fmt(cy1) << ")"
+                    << " (end " << fmt(cx0) << " " << fmt(cy0) << ")"
+                    << " (stroke (width 0.05) (type solid))"
+                    << " (layer \"" << crt_layer << "\")";
+                if (has_uuids()) {
+                    out << " (uuid " << uuid_fmt("crt3_" + comp.refdes) << ")";
+                }
+                out << ")\n";
+            }
         }
     }
 
     // Pads
     for (auto& pad : fp.pads) {
         write_pad(out, pad, comp, model);
+    }
+
+    // 3D model
+    std::string model_path = model_mapper_.lookup(fp.name);
+    if (!model_path.empty()) {
+        std::string env_var = (opts_.version == KiCadVersion::V9) ? "KICAD9_3DMODEL_DIR"
+                            : (opts_.version == KiCadVersion::V8) ? "KICAD8_3DMODEL_DIR"
+                                                                  : "KICAD7_3DMODEL_DIR";
+        out << "    (model \"${" << env_var << "}/" << model_path << "\"\n";
+        out << "      (offset (xyz 0 0 0))\n";
+        out << "      (scale (xyz 1 1 1))\n";
+        out << "      (rotate (xyz 0 0 0))\n";
+        out << "    )\n";
     }
 
     out << "  )\n\n";
@@ -373,6 +615,11 @@ void KicadWriter::write_pad(std::ostream& out, const PadDef& pad,
     }
     out << ")";
 
+    // V9: remove_unused_layers for thru-hole pads
+    if (opts_.version == KiCadVersion::V9 && pad.type == PadDef::THRU_HOLE) {
+        out << " (remove_unused_layers no)";
+    }
+
     // Roundrect ratio
     if (pad.shape == PadDef::ROUNDRECT) {
         out << " (roundrect_rratio " << fmt(pad.roundrect_ratio) << ")";
@@ -385,8 +632,8 @@ void KicadWriter::write_pad(std::ostream& out, const PadDef& pad,
         out << " (net " << net_id << " " << sexp_quote(net_it->second) << ")";
     }
 
-    if (opts_.version == KiCadVersion::V8) {
-        out << " (uuid " << uuid_from("pad_" + comp.refdes + "_" + pad.name) << ")";
+    if (has_uuids()) {
+        out << " (uuid " << uuid_fmt("pad_" + comp.refdes + "_" + pad.name) << ")";
     }
 
     // Custom shape primitives
@@ -413,8 +660,8 @@ void KicadWriter::write_traces(std::ostream& out, const PcbModel& model) {
             << " (width " << fmt(t.width) << ")"
             << " (layer \"" << t.layer << "\")"
             << " (net " << t.net_id << ")";
-        if (opts_.version == KiCadVersion::V8) {
-            out << " (uuid " << uuid_from("seg_" + std::to_string(i)) << ")";
+        if (has_uuids()) {
+            out << " (uuid " << uuid_fmt("seg_" + std::to_string(i)) << ")";
         }
         out << ")\n";
     }
@@ -427,8 +674,8 @@ void KicadWriter::write_traces(std::ostream& out, const PcbModel& model) {
             << " (width " << fmt(a.width) << ")"
             << " (layer \"" << a.layer << "\")"
             << " (net " << a.net_id << ")";
-        if (opts_.version == KiCadVersion::V8) {
-            out << " (uuid " << uuid_from("arc_" + std::to_string(i)) << ")";
+        if (has_uuids()) {
+            out << " (uuid " << uuid_fmt("arc_" + std::to_string(i)) << ")";
         }
         out << ")\n";
     }
@@ -444,8 +691,8 @@ void KicadWriter::write_vias(std::ostream& out, const PcbModel& model) {
             << " (drill " << fmt(v.drill) << ")"
             << " (layers \"" << v.start_layer << "\" \"" << v.end_layer << "\")"
             << " (net " << v.net_id << ")";
-        if (opts_.version == KiCadVersion::V8) {
-            out << " (uuid " << uuid_from("via_" + std::to_string(i)) << ")";
+        if (has_uuids()) {
+            out << " (uuid " << uuid_fmt("via_" + std::to_string(i)) << ")";
         }
         out << ")\n";
     }
@@ -459,8 +706,8 @@ void KicadWriter::write_zones(std::ostream& out, const PcbModel& model) {
         out << "  (zone (net " << z.net_id << ")"
             << " (net_name " << sexp_quote(z.net_name) << ")"
             << " (layer \"" << z.layer << "\")";
-        if (opts_.version == KiCadVersion::V8) {
-            out << " (uuid " << uuid_from("zone_" + std::to_string(i)) << ")";
+        if (has_uuids()) {
+            out << " (uuid " << uuid_fmt("zone_" + std::to_string(i)) << ")";
         }
         out << "\n";
 
@@ -500,8 +747,8 @@ void KicadWriter::write_outline(std::ostream& out, const PcbModel& model) {
             << " (end " << fmt(seg.end.x) << " " << fmt(seg.end.y) << ")"
             << " (stroke (width " << fmt(seg.width) << ") (type solid))"
             << " (layer \"Edge.Cuts\")";
-        if (opts_.version == KiCadVersion::V8) {
-            out << " (uuid " << uuid_from("outline_" + std::to_string(i)) << ")";
+        if (has_uuids()) {
+            out << " (uuid " << uuid_fmt("outline_" + std::to_string(i)) << ")";
         }
         out << ")\n";
     }
@@ -513,8 +760,8 @@ void KicadWriter::write_outline(std::ostream& out, const PcbModel& model) {
             << " (end " << fmt(arc.end.x) << " " << fmt(arc.end.y) << ")"
             << " (stroke (width " << fmt(arc.width) << ") (type solid))"
             << " (layer \"Edge.Cuts\")";
-        if (opts_.version == KiCadVersion::V8) {
-            out << " (uuid " << uuid_from("outarc_" + std::to_string(i)) << ")";
+        if (has_uuids()) {
+            out << " (uuid " << uuid_fmt("outarc_" + std::to_string(i)) << ")";
         }
         out << ")\n";
     }
@@ -531,8 +778,8 @@ void KicadWriter::write_graphics(std::ostream& out, const PcbModel& model) {
                 << " (end " << fmt(gi.end.x) << " " << fmt(gi.end.y) << ")"
                 << " (stroke (width " << fmt(gi.width) << ") (type solid))"
                 << " (layer \"" << gi.layer << "\")";
-            if (opts_.version == KiCadVersion::V8) {
-                out << " (uuid " << uuid_from("grline_" + std::to_string(i)) << ")";
+            if (has_uuids()) {
+                out << " (uuid " << uuid_fmt("grline_" + std::to_string(i)) << ")";
             }
             out << ")\n";
         } else if (gi.kind == GraphicItem::ARC) {
@@ -541,8 +788,8 @@ void KicadWriter::write_graphics(std::ostream& out, const PcbModel& model) {
                 << " (end " << fmt(gi.end.x) << " " << fmt(gi.end.y) << ")"
                 << " (stroke (width " << fmt(gi.width) << ") (type solid))"
                 << " (layer \"" << gi.layer << "\")";
-            if (opts_.version == KiCadVersion::V8) {
-                out << " (uuid " << uuid_from("grarc_" + std::to_string(i)) << ")";
+            if (has_uuids()) {
+                out << " (uuid " << uuid_fmt("grarc_" + std::to_string(i)) << ")";
             }
             out << ")\n";
         } else if (gi.kind == GraphicItem::POLYGON) {
@@ -554,8 +801,8 @@ void KicadWriter::write_graphics(std::ostream& out, const PcbModel& model) {
                 << " (stroke (width " << fmt(gi.width) << ") (type solid))"
                 << " (fill " << (gi.fill ? "yes" : "none") << ")"
                 << " (layer \"" << gi.layer << "\")";
-            if (opts_.version == KiCadVersion::V8) {
-                out << " (uuid " << uuid_from("grpoly_" + std::to_string(i)) << ")";
+            if (has_uuids()) {
+                out << " (uuid " << uuid_fmt("grpoly_" + std::to_string(i)) << ")";
             }
             out << ")\n";
         } else if (gi.kind == GraphicItem::CIRCLE) {
@@ -564,8 +811,8 @@ void KicadWriter::write_graphics(std::ostream& out, const PcbModel& model) {
                 << " (stroke (width " << fmt(gi.width) << ") (type solid))"
                 << " (fill " << (gi.fill ? "yes" : "none") << ")"
                 << " (layer \"" << gi.layer << "\")";
-            if (opts_.version == KiCadVersion::V8) {
-                out << " (uuid " << uuid_from("grcircle_" + std::to_string(i)) << ")";
+            if (has_uuids()) {
+                out << " (uuid " << uuid_fmt("grcircle_" + std::to_string(i)) << ")";
             }
             out << ")\n";
         }
@@ -579,7 +826,7 @@ std::string KicadWriter::ind() const {
 }
 
 std::string KicadWriter::uuid() const {
-    if (opts_.version == KiCadVersion::V8) {
+    if (has_uuids()) {
         return generate_uuid();
     }
     return "";
@@ -587,6 +834,47 @@ std::string KicadWriter::uuid() const {
 
 std::string KicadWriter::uuid_from(const std::string& seed) const {
     return generate_uuid_from_seed(seed);
+}
+
+std::string KicadWriter::uuid_fmt(const std::string& seed) const {
+    std::string u = generate_uuid_from_seed(seed);
+    if (opts_.version == KiCadVersion::V9) {
+        return "\"" + u + "\"";
+    }
+    return u;
+}
+
+int KicadWriter::layer_id(int v78_id) const {
+    if (opts_.version != KiCadVersion::V9) return v78_id;
+
+    // V9 layer ID mapping from V7/V8 IDs
+    static const std::map<int, int> v9_map = {
+        {0, 0},    // F.Cu
+        {31, 2},   // B.Cu
+        {32, 11},  // B.Adhes
+        {33, 9},   // F.Adhes
+        {34, 15},  // B.Paste
+        {35, 13},  // F.Paste
+        {36, 7},   // B.SilkS
+        {37, 5},   // F.SilkS
+        {38, 3},   // B.Mask
+        {39, 1},   // F.Mask
+        {40, 17},  // Dwgs.User
+        {41, 19},  // Cmts.User
+        {42, 21},  // Eco1.User
+        {43, 23},  // Eco2.User
+        {44, 25},  // Edge.Cuts
+        {45, 27},  // Margin
+        {46, 29},  // B.CrtYd
+        {47, 31},  // F.CrtYd
+        {48, 33},  // B.Fab
+        {49, 35},  // F.Fab
+    };
+    auto it = v9_map.find(v78_id);
+    if (it != v9_map.end()) return it->second;
+    // Inner copper layers: V9 uses id*2+2
+    if (v78_id >= 1 && v78_id <= 30) return v78_id * 2 + 2;
+    return v78_id;
 }
 
 void KicadWriter::log(const std::string& msg) {

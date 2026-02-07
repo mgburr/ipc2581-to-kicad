@@ -15,6 +15,8 @@ add_executable(ipc2581-to-kicad
     src/main.cpp
     src/ipc2581_parser.cpp
     src/kicad_writer.cpp
+    src/model_mapper.cpp
+    src/json_export.cpp
     src/geometry.cpp
     src/utils.cpp
 )

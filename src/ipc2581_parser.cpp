@@ -561,10 +561,13 @@ void Ipc2581Parser::parse_contour(const pugi::xml_node& contour,
             double end_ang = std::atan2(end_pt.y - center.y, end_pt.x - center.x);
             double sweep = end_ang - start_ang;
 
-            // Note: Y is negated, so clockwise/counterclockwise is inverted
-            if (!cw) {
+            // Y is negated by ipc_to_kicad_coords, which inverts CW/CCW.
+            // IPC CW becomes KiCad CCW (positive sweep) and vice versa.
+            if (cw) {
+                // IPC CW -> KiCad CCW (positive sweep)
                 if (sweep <= 0) sweep += 2 * PI;
             } else {
+                // IPC CCW -> KiCad CW (negative sweep)
                 if (sweep >= 0) sweep -= 2 * PI;
             }
 
@@ -607,15 +610,27 @@ void Ipc2581Parser::parse_packages(const pugi::xml_node& step, PcbModel& model) 
                 pad.name = child.attribute("number").as_string(
                     std::to_string(pad_num).c_str());
 
+                // Read offset from attributes or child Location element
                 double x = to_mm(parse_double(child.attribute("x").as_string()));
                 double y = to_mm(parse_double(child.attribute("y").as_string()));
+                auto pin_loc = child.child("Location");
+                if (pin_loc) {
+                    x = to_mm(parse_double(pin_loc.attribute("x").as_string()));
+                    y = to_mm(parse_double(pin_loc.attribute("y").as_string()));
+                }
                 pad.offset = ipc_to_kicad_coords({x, y});
                 pad.rotation = parse_double(child.attribute("rotation").as_string());
 
-                // Look up pad stack definition
+                // Look up pad stack definition from attribute or child element
                 std::string ps_ref = child.attribute("padstackDefRef").as_string();
                 if (ps_ref.empty()) {
                     ps_ref = child.attribute("padRef").as_string();
+                }
+                if (ps_ref.empty()) {
+                    auto std_prim = child.child("StandardPrimitiveRef");
+                    if (std_prim) {
+                        ps_ref = std_prim.attribute("id").as_string();
+                    }
                 }
 
                 if (!ps_ref.empty() && model.padstack_defs.count(ps_ref)) {
@@ -710,16 +725,28 @@ void Ipc2581Parser::parse_components(const pugi::xml_node& step, PcbModel& model
 
         std::string layer_ref = comp.attribute("layerRef").as_string();
 
-        // Parse Xform (transform)
+        // Parse Xform (transform) and Location
         auto xform = comp.child("Xform");
-        if (!xform) xform = comp.child("Location"); // alternate name
+        auto location = comp.child("Location");
 
         if (xform) {
-            double x = to_mm(parse_double(xform.attribute("x").as_string()));
-            double y = to_mm(parse_double(xform.attribute("y").as_string()));
-            ci.position = ipc_to_kicad_coords({x, y});
             ci.rotation = parse_double(xform.attribute("rotation").as_string());
             ci.mirror = parse_bool(xform.attribute("mirror").as_string(), false);
+            // Some files put x/y on Xform directly
+            double x = to_mm(parse_double(xform.attribute("x").as_string()));
+            double y = to_mm(parse_double(xform.attribute("y").as_string()));
+            if (x != 0.0 || y != 0.0) {
+                ci.position = ipc_to_kicad_coords({x, y});
+            }
+        }
+
+        // Location element (may exist alongside or instead of Xform)
+        if (location) {
+            double x = to_mm(parse_double(location.attribute("x").as_string()));
+            double y = to_mm(parse_double(location.attribute("y").as_string()));
+            if (x != 0.0 || y != 0.0 || (ci.position.x == 0.0 && ci.position.y == 0.0)) {
+                ci.position = ipc_to_kicad_coords({x, y});
+            }
         }
 
         // Determine if bottom side from layer reference
@@ -789,7 +816,28 @@ void Ipc2581Parser::parse_layer_features(const pugi::xml_node& step, PcbModel& m
                 model.net_name_to_id[net_name] = net_id;
             }
 
-            for (auto feat : set_node.children()) {
+            // Collect all feature nodes — some files place them directly
+            // under Set, others nest them inside Features/UserSpecial.
+            std::vector<pugi::xml_node> feat_nodes;
+            for (auto child : set_node.children()) {
+                std::string ctag = child.name();
+                if (ctag == "Features" || ctag == "UserSpecial") {
+                    for (auto gc : child.children()) {
+                        std::string gctag = gc.name();
+                        if (gctag == "Features" || gctag == "UserSpecial") {
+                            for (auto ggc : gc.children()) {
+                                feat_nodes.push_back(ggc);
+                            }
+                        } else {
+                            feat_nodes.push_back(gc);
+                        }
+                    }
+                } else {
+                    feat_nodes.push_back(child);
+                }
+            }
+
+            for (auto& feat : feat_nodes) {
                 std::string tag = feat.name();
 
                 if (tag == "Line") {
@@ -801,6 +849,12 @@ void Ipc2581Parser::parse_layer_features(const pugi::xml_node& step, PcbModel& m
                     ts.start = ipc_to_kicad_coords({sx, sy});
                     ts.end = ipc_to_kicad_coords({ex, ey});
                     ts.width = to_mm(parse_double(feat.attribute("lineWidth").as_string(), 0.25));
+                    // Some files put lineWidth in a child LineDesc element
+                    auto line_desc = feat.child("LineDesc");
+                    if (line_desc) {
+                        double lw = parse_double(line_desc.attribute("lineWidth").as_string());
+                        if (lw > 0) ts.width = to_mm(lw);
+                    }
                     ts.layer = kicad_layer;
                     ts.net_id = net_id;
 
@@ -833,7 +887,8 @@ void Ipc2581Parser::parse_layer_features(const pugi::xml_node& step, PcbModel& m
                     double start_ang = std::atan2(start_pt.y - center.y, start_pt.x - center.x);
                     double end_ang = std::atan2(end_pt.y - center.y, end_pt.x - center.x);
                     double sweep = end_ang - start_ang;
-                    if (!cw) { if (sweep <= 0) sweep += 2 * PI; }
+                    // Y negation inverts CW/CCW
+                    if (cw) { if (sweep <= 0) sweep += 2 * PI; }
                     else { if (sweep >= 0) sweep -= 2 * PI; }
 
                     auto arc = arc_center_to_mid(start_pt, center, rad_to_deg(sweep),
@@ -884,16 +939,36 @@ void Ipc2581Parser::parse_layer_features(const pugi::xml_node& step, PcbModel& m
                     }
                 } else if (tag == "Polygon" || tag == "Polyline" || tag == "Contour") {
                     // Copper pour / zone
+                    // Contour wraps a Polygon (outline) + Cutout children (holes)
+                    pugi::xml_node outline_node = feat;
+                    std::vector<std::vector<Point>> hole_polys;
+
+                    if (tag == "Contour") {
+                        auto inner_poly = feat.child("Polygon");
+                        if (inner_poly) {
+                            outline_node = inner_poly;
+                        }
+                        for (auto cutout : feat.children("Cutout")) {
+                            auto hole = parse_polygon(cutout);
+                            for (auto& pt : hole) {
+                                pt = ipc_to_kicad_coords(to_mm(pt));
+                            }
+                            if (!hole.empty()) {
+                                hole_polys.push_back(hole);
+                            }
+                        }
+                    }
+
                     if (kicad_layer.find(".Cu") != std::string::npos) {
                         Zone zone;
                         zone.layer = kicad_layer;
                         zone.net_id = net_id;
                         zone.net_name = net_name;
-                        zone.outline = parse_polygon(feat);
-                        // Convert coordinates
+                        zone.outline = parse_polygon(outline_node);
                         for (auto& pt : zone.outline) {
                             pt = ipc_to_kicad_coords(to_mm(pt));
                         }
+                        zone.holes = hole_polys;
                         if (!zone.outline.empty()) {
                             model.zones.push_back(zone);
                         }
@@ -901,7 +976,7 @@ void Ipc2581Parser::parse_layer_features(const pugi::xml_node& step, PcbModel& m
                         // Non-copper polygon → graphic
                         GraphicItem gi;
                         gi.kind = GraphicItem::POLYGON;
-                        gi.points = parse_polygon(feat);
+                        gi.points = parse_polygon(outline_node);
                         for (auto& pt : gi.points) {
                             pt = ipc_to_kicad_coords(to_mm(pt));
                         }

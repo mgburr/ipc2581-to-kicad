@@ -1,5 +1,6 @@
 #include "ipc2581_parser.h"
 #include "kicad_writer.h"
+#include "json_export.h"
 
 #include <iostream>
 #include <string>
@@ -13,10 +14,11 @@ static void print_help() {
               << "\n"
               << "Options:\n"
               << "  -o, --output <file>       Output .kicad_pcb file (default: <input>.kicad_pcb)\n"
-              << "  -v, --version <7|8>       Target KiCad version (default: 8)\n"
+              << "  -v, --version <7|8|9>     Target KiCad version (default: 9)\n"
               << "  -s, --step <name>         Step name to convert (default: first step)\n"
               << "  --list-steps              List available steps and exit\n"
               << "  --list-layers             List layer mapping and exit\n"
+              << "  --export-json             Export parsed PCB data as JSON to stdout\n"
               << "  --verbose                 Verbose output during conversion\n"
               << "  -h, --help                Show help\n";
 }
@@ -32,10 +34,11 @@ static std::string replace_extension(const std::string& path, const std::string&
 int main(int argc, char* argv[]) {
     std::string input_file;
     std::string output_file;
-    int kicad_version = 8;
+    int kicad_version = 9;
     std::string step_name;
     bool list_steps = false;
     bool list_layers = false;
+    bool export_json = false;
     bool verbose = false;
 
     // Parse arguments
@@ -53,12 +56,12 @@ int main(int argc, char* argv[]) {
             output_file = argv[++i];
         } else if (arg == "-v" || arg == "--version") {
             if (i + 1 >= argc) {
-                std::cerr << "Error: -v requires an argument (7 or 8)\n";
+                std::cerr << "Error: -v requires an argument (7, 8, or 9)\n";
                 return 1;
             }
             kicad_version = std::stoi(argv[++i]);
-            if (kicad_version != 7 && kicad_version != 8) {
-                std::cerr << "Error: version must be 7 or 8\n";
+            if (kicad_version != 7 && kicad_version != 8 && kicad_version != 9) {
+                std::cerr << "Error: version must be 7, 8, or 9\n";
                 return 1;
             }
         } else if (arg == "-s" || arg == "--step") {
@@ -71,6 +74,8 @@ int main(int argc, char* argv[]) {
             list_steps = true;
         } else if (arg == "--list-layers") {
             list_layers = true;
+        } else if (arg == "--export-json") {
+            export_json = true;
         } else if (arg == "--verbose") {
             verbose = true;
         } else if (arg[0] == '-') {
@@ -139,10 +144,17 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    // Handle --export-json
+    if (export_json) {
+        ipc2kicad::write_json(std::cout, model);
+        return 0;
+    }
+
     // Write KiCad PCB
     ipc2kicad::WriterOptions writer_opts;
     writer_opts.version = (kicad_version == 7) ? ipc2kicad::KiCadVersion::V7
-                                               : ipc2kicad::KiCadVersion::V8;
+                         : (kicad_version == 8) ? ipc2kicad::KiCadVersion::V8
+                                                : ipc2kicad::KiCadVersion::V9;
     writer_opts.verbose = verbose;
 
     ipc2kicad::KicadWriter writer(writer_opts);
