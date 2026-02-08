@@ -116,10 +116,27 @@ def model_to_json(model):
     result["outline"] = {"segments": segments, "arcs": arcs}
 
     # ── layers ───────────────────────────────────────────────────────
+    # The C++ kicad_writer expects V7/V8 layer IDs:
+    #   F.Cu = 0, inner copper = 1..30, B.Cu = 31
+    # The ODB++ parser assigns V9 IDs (F.Cu=0, B.Cu=2, inner=4,6,...).
+    # We must remap copper layer IDs to match the writer's expectations.
+    # Count copper layers to identify the last one (B.Cu)
+    copper_layers = [l for l in model.layers
+                     if l.layer_type.name in ("SIGNAL", "POWER", "MIXED")]
+    n_copper = len(copper_layers)
+
     result["layers"] = []
     for layer in model.layers:
+        kicad_id = layer.layer_id
+        if layer.layer_type.name in ("SIGNAL", "POWER", "MIXED"):
+            if layer.copper_order == 0:
+                kicad_id = 0       # F.Cu
+            elif layer.copper_order == n_copper - 1:
+                kicad_id = 31      # B.Cu
+            else:
+                kicad_id = layer.copper_order  # inner: 1..N-2
         result["layers"].append({
-            "kicad_id": layer.layer_id,
+            "kicad_id": kicad_id,
             "kicad_name": layer.kicad_name,
             "type": _layer_type_str(layer.layer_type),
             "ipc_name": layer.odb_name,
