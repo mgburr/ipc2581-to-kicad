@@ -861,11 +861,39 @@ void Ipc2581Parser::parse_padstack_rotations(const pugi::xml_node& step, PcbMode
     }
 }
 
-// --- PadStack Via Extraction ---
+// --- PadStack Via & Pin-Net Extraction ---
 
 void Ipc2581Parser::parse_padstack_vias(const pugi::xml_node& step, PcbModel& model) {
-    int count = 0;
+    int via_count = 0;
+    int pin_net_count = 0;
+
     for (auto ps : step.children("PadStack")) {
+        std::string net_name = ps.attribute("net").as_string();
+
+        // Extract pin-to-net mappings from PinRef elements in LayerPads
+        if (!net_name.empty() && net_name != "No Net") {
+            for (auto lp : ps.children("LayerPad")) {
+                auto pin_ref = lp.child("PinRef");
+                if (!pin_ref) continue;
+
+                std::string comp_ref = pin_ref.attribute("componentRef").as_string();
+                std::string pin = pin_ref.attribute("pin").as_string();
+                if (comp_ref.empty() || pin.empty()) continue;
+
+                // Find the component and set pin-net mapping (only once per pin)
+                for (auto& ci : model.components) {
+                    if (ci.refdes == comp_ref) {
+                        if (ci.pin_net_map.find(pin) == ci.pin_net_map.end()) {
+                            ci.pin_net_map[pin] = net_name;
+                            pin_net_count++;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Extract vias from PadStacks with LayerHole platingStatus="VIA"
         auto layer_hole = ps.child("LayerHole");
         if (!layer_hole) continue;
 
@@ -906,8 +934,6 @@ void Ipc2581Parser::parse_padstack_vias(const pugi::xml_node& step, PcbModel& mo
             }
         }
 
-        // Get net
-        std::string net_name = ps.attribute("net").as_string();
         int net_id = model.get_net_id(net_name);
         if (net_id == 0 && !net_name.empty()) {
             net_id = static_cast<int>(model.nets.size());
@@ -923,11 +949,14 @@ void Ipc2581Parser::parse_padstack_vias(const pugi::xml_node& step, PcbModel& mo
         via.end_layer = end_layer;
         via.net_id = net_id;
         model.vias.push_back(via);
-        count++;
+        via_count++;
     }
 
-    if (count > 0) {
-        log("Extracted " + std::to_string(count) + " vias from PadStack elements");
+    if (via_count > 0) {
+        log("Extracted " + std::to_string(via_count) + " vias from PadStack elements");
+    }
+    if (pin_net_count > 0) {
+        log("Extracted " + std::to_string(pin_net_count) + " pin-net mappings from PadStack elements");
     }
 }
 
