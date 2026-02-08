@@ -22,6 +22,7 @@ struct PadDef {
     Type type = SMD;
     std::string layer_side; // "TOP", "BOTTOM", or "ALL" for through-hole
     double rotation = 0.0;  // pad rotation in degrees
+    double solder_mask_margin = 0.0; // >0 means explicit mask expansion
 };
 
 struct PadStackDef {

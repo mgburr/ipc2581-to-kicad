@@ -296,12 +296,29 @@ void KicadWriter::write_stackup(std::ostream& out, const PcbModel& model) {
             out << "        (epsilon_r " << fmt(sl.epsilon_r) << ")\n";
             out << "      )\n";
         } else if (sl.type == "soldermask") {
-            out << "      (layer \"" << sl.name << "\"\n";
+            // Map IPC mask layer name to KiCad layer name
+            std::string mask_name = "F.Mask";
+            std::string name_lower = sl.name;
+            std::transform(name_lower.begin(), name_lower.end(),
+                           name_lower.begin(), ::tolower);
+            if (name_lower.find("bottom") != std::string::npos ||
+                name_lower.find("bot") != std::string::npos) {
+                mask_name = "B.Mask";
+            }
+            out << "      (layer \"" << mask_name << "\"\n";
             out << "        (type \"" << sl.type << "\")\n";
             out << "        (thickness " << fmt(sl.thickness) << ")\n";
             out << "      )\n";
         } else if (sl.type == "silkscreen") {
-            out << "      (layer \"" << sl.name << "\"\n";
+            std::string silk_name = "F.SilkS";
+            std::string name_lower = sl.name;
+            std::transform(name_lower.begin(), name_lower.end(),
+                           name_lower.begin(), ::tolower);
+            if (name_lower.find("bottom") != std::string::npos ||
+                name_lower.find("bot") != std::string::npos) {
+                silk_name = "B.SilkS";
+            }
+            out << "      (layer \"" << silk_name << "\"\n";
             out << "        (type \"" << sl.type << "\")\n";
             out << "      )\n";
         }
@@ -631,6 +648,11 @@ void KicadWriter::write_pad(std::ostream& out, const PadDef& pad,
     // Roundrect ratio
     if (pad.shape == PadDef::ROUNDRECT) {
         out << " (roundrect_rratio " << fmt(pad.roundrect_ratio) << ")";
+    }
+
+    // Solder mask margin (pull-back from copper edge)
+    if (pad.solder_mask_margin > 0.001) {
+        out << " (solder_mask_margin " << fmt(pad.solder_mask_margin) << ")";
     }
 
     // Net

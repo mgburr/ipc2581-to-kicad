@@ -61,11 +61,11 @@ bool Ipc2581Parser::parse(const std::string& filename, PcbModel& model) {
     // Parse layers
     parse_layers(cad_data, model);
 
+    // Build layer mapping (must run before stackup so kicad_id values are set)
+    build_layer_mapping(model);
+
     // Parse stackup
     parse_stackup(cad_data, model);
-
-    // Build layer mapping
-    build_layer_mapping(model);
 
     // Find the Step to convert
     pugi::xml_node step;
@@ -995,6 +995,77 @@ void Ipc2581Parser::parse_padstack_vias(const pugi::xml_node& step, PcbModel& mo
                 }
                 break;
             }
+        }
+    }
+
+    // Extract solder mask margins by comparing PadStack copper vs mask layer
+    // shapes. The margin is (mask_size - copper_size) / 2 for each pin.
+    std::set<std::string> mask_layers;
+    for (auto& l : model.layers) {
+        std::string func = l.ipc_function;
+        std::transform(func.begin(), func.end(), func.begin(), ::toupper);
+        if (func == "SOLDERMASK") {
+            mask_layers.insert(l.ipc_name);
+        }
+    }
+
+    // Collect copper and mask sizes per (component, pin) from PadStack data.
+    // Use max dimension (width or height) for comparison since rotation may
+    // swap width/height between layers.
+    struct PadLayerSizes { double copper_max = 0; double mask_max = 0; };
+    std::map<std::string, PadLayerSizes> pad_layer_sizes; // "comp:pin" -> sizes
+
+    for (auto ps : step.children("PadStack")) {
+        for (auto lp : ps.children("LayerPad")) {
+            std::string layer_ref = lp.attribute("layerRef").as_string();
+            bool is_copper = copper_layers.find(layer_ref) != copper_layers.end();
+            bool is_mask = mask_layers.find(layer_ref) != mask_layers.end();
+            if (!is_copper && !is_mask) continue;
+
+            auto pin_ref = lp.child("PinRef");
+            if (!pin_ref) continue;
+            std::string comp_ref = pin_ref.attribute("componentRef").as_string();
+            std::string pin = pin_ref.attribute("pin").as_string();
+            if (comp_ref.empty() || pin.empty()) continue;
+
+            auto prim_ref = lp.child("StandardPrimitiveRef");
+            if (!prim_ref) continue;
+            std::string prim_id = prim_ref.attribute("id").as_string();
+            if (prim_id.empty() || !model.padstack_defs.count(prim_id)) continue;
+
+            auto& psd = model.padstack_defs[prim_id];
+            if (psd.pads.empty()) continue;
+            double max_dim = std::max(psd.pads[0].width, psd.pads[0].height);
+
+            std::string key = comp_ref + ":" + pin;
+            if (is_copper && pad_layer_sizes[key].copper_max == 0) {
+                pad_layer_sizes[key].copper_max = max_dim;
+            }
+            if (is_mask && pad_layer_sizes[key].mask_max == 0) {
+                pad_layer_sizes[key].mask_max = max_dim;
+            }
+        }
+    }
+
+    // Apply mask margins to footprint pads
+    for (auto& [key, sizes] : pad_layer_sizes) {
+        if (sizes.copper_max <= 0 || sizes.mask_max <= 0) continue;
+        double margin = (sizes.mask_max - sizes.copper_max) / 2.0;
+        if (margin < 0.001) continue;
+
+        auto sep = key.find(':');
+        std::string comp_ref = key.substr(0, sep);
+        std::string pin = key.substr(sep + 1);
+
+        for (auto& ci : model.components) {
+            if (ci.refdes != comp_ref) continue;
+            auto fp_it = model.footprint_defs.find(ci.footprint_ref);
+            if (fp_it == model.footprint_defs.end()) break;
+            for (auto& pad : fp_it->second.pads) {
+                if (pad.name != pin) continue;
+                pad.solder_mask_margin = margin;
+            }
+            break;
         }
     }
 
