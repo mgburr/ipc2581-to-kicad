@@ -719,7 +719,10 @@ void KicadWriter::write_zones(std::ostream& out, const PcbModel& model) {
         }
         out << "\n";
 
-        // Fill settings
+        out << "    (hatch edge 0.508)\n";
+        out << "    (connect_pads (clearance 0))\n";
+        out << "    (min_thickness 0.254)\n";
+        out << "    (filled_areas_thickness no)\n";
         out << "    (fill yes (thermal_gap 0.5) (thermal_bridge_width 0.5))\n";
 
         // Outline polygon
@@ -736,6 +739,20 @@ void KicadWriter::write_zones(std::ostream& out, const PcbModel& model) {
             out << "    (polygon\n";
             out << "      (pts\n";
             for (auto& pt : hole) {
+                out << "        (xy " << fmt(pt.x) << " " << fmt(pt.y) << ")\n";
+            }
+            out << "      )\n";
+            out << "    )\n";
+        }
+
+        // Pre-computed filled polygon for zones without holes.
+        // These are pre-computed copper fill fragments from IPC-2581.
+        // Zones with holes are real pour boundaries — let KiCad fill those.
+        if (z.holes.empty()) {
+            out << "    (filled_polygon\n";
+            out << "      (layer \"" << z.layer << "\")\n";
+            out << "      (pts\n";
+            for (auto& pt : z.outline) {
                 out << "        (xy " << fmt(pt.x) << " " << fmt(pt.y) << ")\n";
             }
             out << "      )\n";

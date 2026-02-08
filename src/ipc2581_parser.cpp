@@ -93,6 +93,7 @@ bool Ipc2581Parser::parse(const std::string& filename, PcbModel& model) {
     parse_packages(step, model);
     parse_components(step, model);
     parse_padstack_rotations(step, model);
+    parse_padstack_vias(step, model);
     parse_layer_features(step, model);
 
     log("Parse complete: " + std::to_string(model.components.size()) + " components, " +
@@ -857,6 +858,76 @@ void Ipc2581Parser::parse_padstack_rotations(const pugi::xml_node& step, PcbMode
 
     if (count > 0) {
         log("Extracted " + std::to_string(count) + " per-pad rotations from PadStack data");
+    }
+}
+
+// --- PadStack Via Extraction ---
+
+void Ipc2581Parser::parse_padstack_vias(const pugi::xml_node& step, PcbModel& model) {
+    int count = 0;
+    for (auto ps : step.children("PadStack")) {
+        auto layer_hole = ps.child("LayerHole");
+        if (!layer_hole) continue;
+
+        std::string plating = layer_hole.attribute("platingStatus").as_string();
+        if (plating != "VIA") continue;
+
+        double drill = to_mm(parse_double(layer_hole.attribute("diameter").as_string()));
+        double x = to_mm(parse_double(layer_hole.attribute("x").as_string()));
+        double y = to_mm(parse_double(layer_hole.attribute("y").as_string()));
+        Point pos = ipc_to_kicad_coords({x, y});
+
+        // Determine layer span
+        std::string start_layer = "F.Cu";
+        std::string end_layer = "B.Cu";
+        auto span = layer_hole.child("Span");
+        if (span) {
+            std::string from = model.get_kicad_layer(
+                span.attribute("fromLayer").as_string());
+            std::string to = model.get_kicad_layer(
+                span.attribute("toLayer").as_string());
+            if (!from.empty()) start_layer = from;
+            if (!to.empty()) end_layer = to;
+        }
+
+        // Get pad diameter from LayerPad's StandardPrimitiveRef
+        double pad_diameter = drill * 2.0;
+        auto layer_pad = ps.child("LayerPad");
+        if (layer_pad) {
+            auto prim_ref = layer_pad.child("StandardPrimitiveRef");
+            if (prim_ref) {
+                std::string prim_id = prim_ref.attribute("id").as_string();
+                if (!prim_id.empty() && model.padstack_defs.count(prim_id)) {
+                    auto& psd = model.padstack_defs[prim_id];
+                    if (!psd.pads.empty()) {
+                        pad_diameter = psd.pads[0].width;
+                    }
+                }
+            }
+        }
+
+        // Get net
+        std::string net_name = ps.attribute("net").as_string();
+        int net_id = model.get_net_id(net_name);
+        if (net_id == 0 && !net_name.empty()) {
+            net_id = static_cast<int>(model.nets.size());
+            model.nets.push_back({net_id, net_name});
+            model.net_name_to_id[net_name] = net_id;
+        }
+
+        Via via;
+        via.position = pos;
+        via.drill = drill;
+        via.diameter = pad_diameter;
+        via.start_layer = start_layer;
+        via.end_layer = end_layer;
+        via.net_id = net_id;
+        model.vias.push_back(via);
+        count++;
+    }
+
+    if (count > 0) {
+        log("Extracted " + std::to_string(count) + " vias from PadStack elements");
     }
 }
 
