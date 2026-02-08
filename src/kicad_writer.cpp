@@ -768,8 +768,8 @@ void KicadWriter::write_zones(std::ostream& out, const PcbModel& model) {
         }
 
         // Pre-computed filled polygon for zones without holes.
-        // These are pre-computed copper fill fragments from IPC-2581.
-        // Zones with holes are real pour boundaries — let KiCad fill those.
+        // Zones with holes need KiCad to compute the fill (press 'B')
+        // to properly handle clearances around pads/traces on other nets.
         if (z.holes.empty()) {
             out << "    (filled_polygon\n";
             out << "      (layer \"" << z.layer << "\")\n";
