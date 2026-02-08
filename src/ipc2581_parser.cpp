@@ -842,9 +842,6 @@ void Ipc2581Parser::parse_padstack_rotations(const pugi::xml_node& step, PcbMode
             double comp_rot = rot_it->second;
             double local_rotation = std::fmod(abs_rotation - comp_rot + 360.0, 360.0);
 
-            // Convert IPC rotation convention (CCW) to KiCad (CW)
-            local_rotation = std::fmod(360.0 - local_rotation, 360.0);
-
             if (local_rotation == 0.0) continue;
 
             // Store on the matching component instance

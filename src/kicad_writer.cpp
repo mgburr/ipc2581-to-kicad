@@ -8,6 +8,7 @@
 #include <set>
 #include <map>
 #include <algorithm>
+#include <cmath>
 
 namespace ipc2kicad {
 
@@ -546,12 +547,7 @@ void KicadWriter::write_footprint(std::ostream& out, const PcbModel& model,
 
     // Pads
     for (auto& pad : fp.pads) {
-        PadDef adjusted_pad = pad;
-        auto rot_it = comp.pin_rotation_map.find(pad.name);
-        if (rot_it != comp.pin_rotation_map.end()) {
-            adjusted_pad.rotation = rot_it->second;
-        }
-        write_pad(out, adjusted_pad, comp, model);
+        write_pad(out, pad, comp, model);
     }
 
     // 3D model
@@ -595,9 +591,16 @@ void KicadWriter::write_pad(std::ostream& out, const PadDef& pad,
     out << "    (pad " << sexp_quote(pad.name) << " " << type_str << " " << shape_str;
 
     // Position (relative to footprint origin)
+    // KiCad treats pad rotation as absolute board-level rotation, NOT relative
+    // to the footprint. We must add the component rotation so pad shapes are
+    // oriented correctly on the board.
+    double pad_rotation = std::fmod(pad.rotation + comp.rotation, 360.0);
+    if (pad_rotation < 0) pad_rotation += 360.0;
+    if (std::abs(pad_rotation) < 0.001 || std::abs(pad_rotation - 360.0) < 0.001)
+        pad_rotation = 0.0;
     out << " (at " << fmt(pad.offset.x) << " " << fmt(pad.offset.y);
-    if (pad.rotation != 0.0) {
-        out << " " << fmt(pad.rotation);
+    if (pad_rotation != 0.0) {
+        out << " " << fmt(pad_rotation);
     }
     out << ")";
 

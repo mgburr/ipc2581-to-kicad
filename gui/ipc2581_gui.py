@@ -23,7 +23,7 @@ from pcb_viewer_3d import PcbViewer3D
 class Ipc2581ConverterGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("IPC-2581 to KiCad Converter")
+        self.root.title("IPC-2581 / ODB++ to KiCad Converter")
         self.root.geometry("700x600")
         self.root.minsize(600, 500)
 
@@ -209,11 +209,11 @@ class Ipc2581ConverterGUI:
     def _browse_input(self):
         """Open file dialog for input file selection."""
         filename = filedialog.askopenfilename(
-            title="Select IPC-2581 File",
+            title="Select IPC-2581 or ODB++ File",
             filetypes=[
+                ("All supported", "*.xml *.cvg *.tgz *.zip"),
                 ("IPC-2581 files", "*.xml *.cvg"),
-                ("IPC-2581 XML files", "*.xml"),
-                ("IPC-2581 CVG files", "*.cvg"),
+                ("ODB++ archives", "*.tgz *.zip"),
                 ("All files", "*.*")
             ]
         )

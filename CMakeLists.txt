@@ -17,6 +17,7 @@ add_executable(ipc2581-to-kicad
     src/kicad_writer.cpp
     src/model_mapper.cpp
     src/json_export.cpp
+    src/json_import.cpp
     src/geometry.cpp
     src/utils.cpp
 )
@@ -24,9 +25,18 @@ add_executable(ipc2581-to-kicad
 target_include_directories(ipc2581-to-kicad PRIVATE
     src
     third_party/pugixml
+    third_party
 )
 
 target_link_libraries(ipc2581-to-kicad PRIVATE pugixml)
 
 # Install
 install(TARGETS ipc2581-to-kicad DESTINATION bin)
+install(FILES
+    odb/__init__.py
+    odb/pcb_model.py
+    odb/odb_parser.py
+    odb/utils.py
+    odb/odb_to_json.py
+    DESTINATION share/ipc2581-to-kicad/odb
+)

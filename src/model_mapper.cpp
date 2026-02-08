@@ -105,10 +105,6 @@ std::string ModelMapper::try_direct(const std::string& name) const {
     // Generic 6x6mm tactile switches
     if (name.rfind("SW_Push_6x6", 0) == 0 || name.rfind("TACT_6", 0) == 0)
         return "Button_Switch_SMD.3dshapes/SW_Push_1TS009xxxx-xxxx-xxxx_6x6x5mm.step";
-    // CUI GRPB push button switch
-    if (name.rfind("GRPB", 0) == 0)
-        return "Button_Switch_SMD.3dshapes/SW_Push_1P1T_NO_E-Switch_TL3301NxxxxxG.step";
-
     // Hirose FH12 FPC connectors: extract pin count from name
     {
         static const std::regex re_fh12(R"(FH12[\-]?(\d+)S)", std::regex::icase);
