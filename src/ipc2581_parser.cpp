@@ -612,6 +612,9 @@ void Ipc2581Parser::parse_packages(const pugi::xml_node& step, PcbModel& model) 
                 pad.name = child.attribute("number").as_string(
                     std::to_string(pad_num).c_str());
 
+                // Check pin type for through-hole detection
+                std::string pin_type = child.attribute("type").as_string();
+
                 // Read offset from attributes or child Location element
                 double x = to_mm(parse_double(child.attribute("x").as_string()));
                 double y = to_mm(parse_double(child.attribute("y").as_string()));
@@ -648,6 +651,11 @@ void Ipc2581Parser::parse_packages(const pugi::xml_node& step, PcbModel& model) 
                         pad.drill_diameter = ps.drill_diameter;
                         pad.type = ps.plated ? PadDef::THRU_HOLE : PadDef::NPTH;
                         pad.layer_side = "ALL";
+                    } else if (pin_type == "THRU") {
+                        // Pin marked as through-hole but no drill in padstack def;
+                        // drill diameter will be resolved later from Drill Guide layer
+                        pad.type = PadDef::THRU_HOLE;
+                        pad.layer_side = "ALL";
                     } else {
                         pad.type = PadDef::SMD;
                         pad.layer_side = "TOP"; // will be flipped per component
@@ -658,8 +666,13 @@ void Ipc2581Parser::parse_packages(const pugi::xml_node& step, PcbModel& model) 
                     pad.shape = PadDef::CIRCLE;
                     pad.width = to_mm(0.5);
                     pad.height = pad.width;
-                    pad.type = PadDef::SMD;
-                    pad.layer_side = "TOP";
+                    if (pin_type == "THRU") {
+                        pad.type = PadDef::THRU_HOLE;
+                        pad.layer_side = "ALL";
+                    } else {
+                        pad.type = PadDef::SMD;
+                        pad.layer_side = "TOP";
+                    }
                 }
 
                 fp.pads.push_back(pad);
@@ -866,6 +879,107 @@ void Ipc2581Parser::parse_padstack_rotations(const pugi::xml_node& step, PcbMode
 void Ipc2581Parser::parse_padstack_vias(const pugi::xml_node& step, PcbModel& model) {
     int via_count = 0;
     int pin_net_count = 0;
+
+    // Build a position-based drill map from Drill Guide layer Hole elements.
+    // Key: (x_mm, y_mm) rounded to 3 decimals; Value: drill diameter in mm.
+    // Also parse component-named holes (e.g. "J2-1 Hole Drill") to match
+    // drill diameters to through-hole component pads.
+    struct DrillInfo { double diameter; std::string name; };
+    std::map<std::string, DrillInfo> drill_map; // "x,y" -> drill info
+    for (auto lf : step.children("LayerFeature")) {
+        std::string layer_ref = lf.attribute("layerRef").as_string();
+        if (std::string(layer_ref).find("Drill") == std::string::npos)
+            continue;
+        for (auto set_node : lf.children("Set")) {
+            for (auto hole : set_node.children("Hole")) {
+                std::string plating = hole.attribute("platingStatus").as_string();
+                if (plating != "PLATED") continue;
+                double diam = to_mm(parse_double(hole.attribute("diameter").as_string()));
+                double hx = to_mm(parse_double(hole.attribute("x").as_string()));
+                double hy = to_mm(parse_double(hole.attribute("y").as_string()));
+                std::string hname = hole.attribute("name").as_string();
+                // Key by position rounded to 3 decimal places
+                char key[64];
+                snprintf(key, sizeof(key), "%.3f,%.3f", hx, hy);
+                drill_map[key] = {diam, hname};
+            }
+        }
+    }
+
+    // Match drill holes and copper layer shapes to through-hole component pads
+    // via PadStack positions. Also updates pad shape from the copper layer
+    // PadStack data (which may differ from the Package Pin shape definition).
+    std::set<std::string> copper_layers;
+    for (auto& l : model.layers) {
+        std::string func = l.ipc_function;
+        std::transform(func.begin(), func.end(), func.begin(), ::toupper);
+        if (func == "SIGNAL" || func == "POWER_GROUND" || func == "POWER" ||
+            func == "GROUND" || func == "MIXED") {
+            copper_layers.insert(l.ipc_name);
+        }
+    }
+
+    for (auto ps : step.children("PadStack")) {
+        for (auto lp : ps.children("LayerPad")) {
+            std::string layer_ref = lp.attribute("layerRef").as_string();
+            // Only process copper layers to avoid duplicate updates
+            if (copper_layers.find(layer_ref) == copper_layers.end())
+                continue;
+
+            auto pin_ref = lp.child("PinRef");
+            if (!pin_ref) continue;
+            std::string comp_ref = pin_ref.attribute("componentRef").as_string();
+            std::string pin = pin_ref.attribute("pin").as_string();
+            if (comp_ref.empty() || pin.empty()) continue;
+
+            // Check for drill hole at this position
+            auto loc = lp.child("Location");
+            if (!loc) continue;
+            double px = to_mm(parse_double(loc.attribute("x").as_string()));
+            double py = to_mm(parse_double(loc.attribute("y").as_string()));
+            char key[64];
+            snprintf(key, sizeof(key), "%.3f,%.3f", px, py);
+
+            auto dit = drill_map.find(key);
+
+            // Look up copper layer pad shape from StandardPrimitiveRef
+            auto prim_ref = lp.child("StandardPrimitiveRef");
+            std::string prim_id = prim_ref ? prim_ref.attribute("id").as_string() : "";
+
+            // Find the component and update its pad
+            for (auto& ci : model.components) {
+                if (ci.refdes != comp_ref) continue;
+                auto fp_it = model.footprint_defs.find(ci.footprint_ref);
+                if (fp_it == model.footprint_defs.end()) break;
+                for (auto& pad : fp_it->second.pads) {
+                    if (pad.name != pin) continue;
+
+                    // Update drill diameter from Drill Guide layer
+                    if (dit != drill_map.end() && pad.drill_diameter == 0) {
+                        pad.drill_diameter = dit->second.diameter;
+                        if (pad.type == PadDef::SMD) {
+                            pad.type = PadDef::THRU_HOLE;
+                            pad.layer_side = "ALL";
+                        }
+                    }
+
+                    // Update pad shape from copper layer PadStack data,
+                    // but only for through-hole pads where the Package Pin
+                    // shape is the solder mask, not the copper pad.
+                    if (pad.type == PadDef::THRU_HOLE &&
+                        !prim_id.empty() && model.padstack_defs.count(prim_id)) {
+                        auto& psd = model.padstack_defs[prim_id];
+                        if (!psd.pads.empty()) {
+                            pad.shape = psd.pads[0].shape;
+                            pad.width = psd.pads[0].width;
+                            pad.height = psd.pads[0].height;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
 
     for (auto ps : step.children("PadStack")) {
         std::string net_name = ps.attribute("net").as_string();
