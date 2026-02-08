@@ -675,7 +675,17 @@ void Ipc2581Parser::parse_packages(const pugi::xml_node& step, PcbModel& model) 
                     }
                 }
 
-                fp.pads.push_back(pad);
+                // Skip duplicate pin numbers (e.g. fiducials with 2 identical pins)
+                bool duplicate = false;
+                for (auto& existing : fp.pads) {
+                    if (existing.name == pad.name) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) {
+                    fp.pads.push_back(pad);
+                }
                 pad_num++;
             } else if (tag == "SilkScreen" || tag == "Outline" || tag == "Courtyard" ||
                        tag == "AssemblyDrawing") {
@@ -963,16 +973,23 @@ void Ipc2581Parser::parse_padstack_vias(const pugi::xml_node& step, PcbModel& mo
                         }
                     }
 
-                    // Update pad shape from copper layer PadStack data,
-                    // but only for through-hole pads where the Package Pin
-                    // shape is the solder mask, not the copper pad.
-                    if (pad.type == PadDef::THRU_HOLE &&
-                        !prim_id.empty() && model.padstack_defs.count(prim_id)) {
+                    // Update pad shape from copper layer PadStack data.
+                    // Package Pin StandardPrimitiveRef references the solder
+                    // mask shape; the actual copper pad shape comes from the
+                    // PadStack LayerPad on the copper layer.
+                    // For through-hole pads: always override (mask vs copper differ).
+                    // For SMD pads: only override when shape TYPE differs
+                    // (e.g. fiducials: Package Pin says RECT but copper is CIRCLE).
+                    if (!prim_id.empty() && model.padstack_defs.count(prim_id)) {
                         auto& psd = model.padstack_defs[prim_id];
                         if (!psd.pads.empty()) {
-                            pad.shape = psd.pads[0].shape;
-                            pad.width = psd.pads[0].width;
-                            pad.height = psd.pads[0].height;
+                            bool override_shape = (pad.type == PadDef::THRU_HOLE) ||
+                                                  (pad.shape != psd.pads[0].shape);
+                            if (override_shape) {
+                                pad.shape = psd.pads[0].shape;
+                                pad.width = psd.pads[0].width;
+                                pad.height = psd.pads[0].height;
+                            }
                         }
                     }
                 }
