@@ -220,6 +220,8 @@ static void write_components(std::ostream& out, const PcbModel& model) {
         out << "{\"refdes\":" << json_str(c.refdes)
             << ",\"footprint_ref\":" << json_str(c.footprint_ref)
             << ",\"value\":" << json_str(c.value)
+            << ",\"description\":" << json_str(c.description)
+            << ",\"part_number\":" << json_str(c.part_number)
             << ",\"position\":";
         write_point(out, c.position);
         out << ",\"rotation\":" << fmt(c.rotation)

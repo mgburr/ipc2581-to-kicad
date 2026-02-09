@@ -197,6 +197,8 @@ static void read_components(const json& j, PcbModel& model) {
         comp.refdes        = cj.value("refdes", "");
         comp.footprint_ref = cj.value("footprint_ref", "");
         comp.value         = cj.value("value", "");
+        comp.description   = cj.value("description", "");
+        comp.part_number   = cj.value("part_number", "");
         comp.position      = read_point(cj.value("position", json::array()));
         comp.rotation      = cj.value("rotation", 0.0);
         comp.mirror        = cj.value("mirror", false);

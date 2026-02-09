@@ -92,6 +92,7 @@ bool Ipc2581Parser::parse(const std::string& filename, PcbModel& model) {
     parse_profile(step, model);
     parse_packages(step, model);
     parse_components(step, model);
+    parse_bom(root, model);
     parse_padstack_rotations(step, model);
     parse_padstack_vias(step, model);
     parse_layer_features(step, model);
@@ -816,6 +817,120 @@ void Ipc2581Parser::parse_components(const pugi::xml_node& step, PcbModel& model
     }
 
     log("Parsed " + std::to_string(model.components.size()) + " component instances");
+}
+
+// --- BOM Parsing ---
+
+// Extract a concise component value from an OEMDesignNumberRef part number.
+// Examples: "RES-0402-10K" -> "10K", "CAP-0402-0.1uF/25V" -> "0.1uF/25V",
+//           "SW-TL1014AF160QG" -> "TL1014AF160QG", "TESTPOINT" -> "TESTPOINT"
+static std::string extract_value_from_part_number(const std::string& part_number) {
+    if (part_number.empty()) return "";
+
+    // Known type prefixes to strip
+    static const std::vector<std::string> type_prefixes = {
+        "CAP", "RES", "IND", "CON", "SW", "LED", "DIODE"
+    };
+    // Known package codes to strip
+    static const std::vector<std::string> package_codes = {
+        "0201", "0402", "0603", "0805", "1206", "1210", "1812", "2010", "2512",
+        "SOT23", "SOT223", "SOD123", "SOD323", "SOIC", "SSOP", "TQFP", "QFN", "BGA"
+    };
+
+    // Split on '-'
+    std::vector<std::string> segments;
+    std::string seg;
+    for (char c : part_number) {
+        if (c == '-') {
+            if (!seg.empty()) segments.push_back(seg);
+            seg.clear();
+        } else {
+            seg += c;
+        }
+    }
+    if (!seg.empty()) segments.push_back(seg);
+
+    if (segments.empty()) return part_number;
+    if (segments.size() == 1) return part_number; // no dashes, use as-is
+
+    // Try to strip known prefixes and package codes
+    std::vector<std::string> remaining;
+    for (auto& s : segments) {
+        std::string upper = s;
+        std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+
+        bool is_prefix = false;
+        for (auto& p : type_prefixes) {
+            if (upper == p) { is_prefix = true; break; }
+        }
+        if (is_prefix) continue;
+
+        bool is_package = false;
+        for (auto& p : package_codes) {
+            if (upper == p) { is_package = true; break; }
+        }
+        if (is_package) continue;
+
+        remaining.push_back(s);
+    }
+
+    if (remaining.empty()) return part_number; // all segments were prefixes/packages
+
+    // Rejoin remaining segments with '-' if multiple
+    std::string result;
+    for (size_t i = 0; i < remaining.size(); i++) {
+        if (i > 0) result += '-';
+        result += remaining[i];
+    }
+    return result;
+}
+
+void Ipc2581Parser::parse_bom(const pugi::xml_node& root, PcbModel& model) {
+    auto bom = root.child("Bom");
+    if (!bom) {
+        log("No <Bom> section found, skipping BOM data extraction");
+        return;
+    }
+
+    int count = 0;
+    for (auto item : bom.children("BomItem")) {
+        std::string oem_ref = item.attribute("OEMDesignNumberRef").as_string();
+        std::string description = item.attribute("description").as_string();
+
+        // Extract part number from OEMDesignNumberRef (after the colon)
+        std::string part_number;
+        auto colon_pos = oem_ref.find(':');
+        if (colon_pos != std::string::npos) {
+            part_number = oem_ref.substr(colon_pos + 1);
+        } else {
+            part_number = oem_ref;
+        }
+
+        // Extract concise value from part number
+        std::string value = extract_value_from_part_number(part_number);
+
+        // Apply to all RefDes children
+        for (auto ref : item.children("RefDes")) {
+            std::string refdes = ref.attribute("name").as_string();
+            if (refdes.empty()) continue;
+
+            // Find matching component instance
+            for (auto& ci : model.components) {
+                if (ci.refdes == refdes) {
+                    ci.description = description;
+                    ci.part_number = part_number;
+                    // Only set value from BOM if not already set
+                    if (ci.value.empty() && !value.empty()) {
+                        ci.value = value;
+                    }
+                    count++;
+                    break;
+                }
+            }
+        }
+    }
+
+    log("BOM: extracted data for " + std::to_string(count) + " component instances");
 }
 
 // --- PadStack Rotation Extraction ---

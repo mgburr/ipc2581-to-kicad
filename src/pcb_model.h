@@ -61,6 +61,8 @@ struct ComponentInstance {
     std::string refdes;
     std::string footprint_ref;   // reference to Footprint.name
     std::string value;
+    std::string description;     // from BOM description
+    std::string part_number;     // from BOM OEMDesignNumberRef (after colon)
     Point position;
     double rotation = 0.0;
     bool mirror = false;   // bottom side placement

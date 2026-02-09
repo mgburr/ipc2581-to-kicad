@@ -1,5 +1,7 @@
 #include "ipc2581_parser.h"
 #include "kicad_writer.h"
+#include "schematic_writer.h"
+#include "project_writer.h"
 #include "json_export.h"
 #include "json_import.h"
 
@@ -41,6 +43,9 @@ static void print_help() {
               << "  --list-layers             List layer mapping and exit\n"
               << "  --export-json             Export parsed PCB data as JSON to stdout\n"
               << "  --import-json             Import from JSON file (output of --export-json)\n"
+              << "  --schematic               Also generate .kicad_sch and .kicad_pro files\n"
+              << "  --use-kicad-symbols       Use standard KiCad library symbols (R, C, etc.) in schematic\n"
+              << "  --kicad-symbol-dir DIR    Path to KiCad symbol libraries (auto-detected if omitted)\n"
               << "  --verbose                 Verbose output during conversion\n"
               << "  -h, --help                Show help\n";
 }
@@ -293,6 +298,9 @@ int main(int argc, char* argv[]) {
     bool export_json = false;
     bool import_json = false;
     bool verbose = false;
+    bool gen_schematic = false;
+    bool use_kicad_symbols = false;
+    std::string kicad_symbol_dir;
 
     // Parse arguments
     for (int i = 1; i < argc; i++) {
@@ -331,6 +339,17 @@ int main(int argc, char* argv[]) {
             export_json = true;
         } else if (arg == "--import-json") {
             import_json = true;
+        } else if (arg == "--schematic") {
+            gen_schematic = true;
+        } else if (arg == "--use-kicad-symbols") {
+            use_kicad_symbols = true;
+        } else if (arg == "--kicad-symbol-dir") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --kicad-symbol-dir requires an argument\n";
+                return 1;
+            }
+            kicad_symbol_dir = argv[++i];
+            use_kicad_symbols = true; // implied
         } else if (arg == "--verbose") {
             verbose = true;
         } else if (arg[0] == '-') {
@@ -469,6 +488,37 @@ int main(int argc, char* argv[]) {
     std::cout << "  Traces: " << model.traces.size() << "\n";
     std::cout << "  Vias: " << model.vias.size() << "\n";
     std::cout << "  Nets: " << (model.nets.empty() ? 0 : model.nets.size() - 1) << "\n";
+
+    // Generate schematic and project files if requested
+    if (gen_schematic) {
+        std::string sch_file = replace_extension(output_file, ".kicad_sch");
+        std::string pro_file = replace_extension(output_file, ".kicad_pro");
+
+        // Extract project name from output path
+        std::string project_name = output_file;
+        auto slash = project_name.rfind('/');
+        if (slash != std::string::npos) project_name = project_name.substr(slash + 1);
+        auto dot = project_name.rfind('.');
+        if (dot != std::string::npos) project_name = project_name.substr(0, dot);
+
+        ipc2kicad::SchematicWriterOptions sch_opts;
+        sch_opts.verbose = verbose;
+        sch_opts.use_kicad_symbols = use_kicad_symbols;
+        sch_opts.kicad_symbol_dir = kicad_symbol_dir;
+
+        ipc2kicad::SchematicWriter sch_writer(sch_opts);
+        if (!sch_writer.write(sch_file, model)) {
+            std::cerr << "Error: failed to write " << sch_file << "\n";
+            return 1;
+        }
+        std::cout << "  Schematic: " << sch_file << "\n";
+
+        if (!ipc2kicad::write_project_file(pro_file, project_name)) {
+            std::cerr << "Error: failed to write " << pro_file << "\n";
+            return 1;
+        }
+        std::cout << "  Project:   " << pro_file << "\n";
+    }
 
     return 0;
 }

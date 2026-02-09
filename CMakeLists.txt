@@ -20,6 +20,8 @@ add_executable(ipc2581-to-kicad
     src/json_import.cpp
     src/geometry.cpp
     src/utils.cpp
+    src/schematic_writer.cpp
+    src/project_writer.cpp
 )
 
 target_include_directories(ipc2581-to-kicad PRIVATE

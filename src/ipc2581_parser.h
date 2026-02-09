@@ -52,6 +52,7 @@ private:
     void parse_layer_features(const pugi::xml_node& step, PcbModel& model);
     void parse_padstack_rotations(const pugi::xml_node& step, PcbModel& model);
     void parse_padstack_vias(const pugi::xml_node& step, PcbModel& model);
+    void parse_bom(const pugi::xml_node& root, PcbModel& model);
 
     // Geometry parsers
     std::vector<Point> parse_polygon(const pugi::xml_node& node);
