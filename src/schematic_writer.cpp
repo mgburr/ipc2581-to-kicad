@@ -29,6 +29,11 @@ static const double GRID = 1.27;         // KiCad schematic grid
 static const double GRID_CELL_W = 40.64; // mm between columns (multiple of 1.27)
 static const double GRID_MARGIN = 10.16; // mm vertical margin (multiple of 1.27)
 
+// Chain layout spacing
+static const double CHAIN_SPACING = 20.32;   // ~20mm between chain components (on grid)
+static const double ROW_SPACING = 25.4;      // ~25mm between rows
+static const double BRANCH_SPACING = 12.7;   // ~12mm for vertical branches
+
 // Snap a value to the 1.27mm grid
 static double snap(double v) {
     return std::round(v / GRID) * GRID;
@@ -388,19 +393,24 @@ void SchematicWriter::build_symbol_defs(const PcbModel& model) {
             // For known symbols, use hardcoded pin layouts:
             if (sym.kicad_lib_id == "Device:R" || sym.kicad_lib_id == "Device:C" ||
                 sym.kicad_lib_id == "Device:L") {
-                // Vertical 2-pin: pin 1 at top (0, 3.81), pin 2 at bottom (0, -3.81)
+                // Vertical 2-pin: pin endpoints in KiCad library (Y-up):
+                //   Pin 1: (0, 3.81 270) -> schematic-relative: (0, -3.81)
+                //   Pin 2: (0, -3.81 90) -> schematic-relative: (0, 3.81)
                 sym.body_width = 2.54;
                 sym.body_height = 7.62;
-                sym.pins.push_back({"1", 0, -3.81, 0, "passive"}); // top (negative Y = up in schematic)
+                sym.pins.push_back({"1", 0, -3.81, 0, "passive"}); // top
                 sym.pins.push_back({"2", 0, 3.81, 0, "passive"});  // bottom
             } else if (sym.kicad_lib_id == "Device:D") {
                 // Horizontal 2-pin: pin 1 (K) at left, pin 2 (A) at right
+                // Library: pin 1 at (-3.81, 0), pin 2 at (3.81, 0)
+                // Schematic-relative: same (X not flipped)
                 sym.body_width = 7.62;
                 sym.body_height = 2.54;
                 sym.pins.push_back({"1", -3.81, 0, 0, "passive"});
                 sym.pins.push_back({"2", 3.81, 0, 1, "passive"});
             } else if (sym.kicad_lib_id == "Connector:TestPoint") {
-                // Single pin at bottom
+                // Single pin: library (0, 0 90) -> schematic-relative (0, 0)
+                // TestPoint pin is at the symbol origin
                 sym.body_width = 2.54;
                 sym.body_height = 5.08;
                 sym.pins.push_back({"1", 0, 0, 0, "passive"});
@@ -411,15 +421,17 @@ void SchematicWriter::build_symbol_defs(const PcbModel& model) {
                 sym.pins.push_back({"1", -5.08, 0, 0, "passive"});
                 sym.pins.push_back({"2", 5.08, 0, 1, "passive"});
             } else if (sym.kicad_lib_id.find("Connector_Generic:Conn_01x") == 0) {
-                // Vertical connector: all pins on right side, spaced 2.54mm apart
+                // Vertical connector: all pins on LEFT side, spaced 2.54mm apart
+                // KiCad library: Conn_01x pins are at x=-3.81 (side=0, facing left)
+                // Schematic pin endpoint at x = -5.08
                 sym.body_width = 5.08;
                 sym.body_height = (n - 1) * PIN_PITCH + 2 * PIN_PITCH;
                 for (int i = 0; i < n; i++) {
                     PinDef pin;
                     pin.name = std::to_string(i + 1);
-                    pin.x = 5.08;
+                    pin.x = -5.08;
                     pin.y = -((n - 1) * PIN_PITCH / 2.0) + i * PIN_PITCH;
-                    pin.side = 1;
+                    pin.side = 0;
                     pin.type = "passive";
                     sym.pins.push_back(pin);
                 }
@@ -457,14 +469,16 @@ void SchematicWriter::build_symbol_defs(const PcbModel& model) {
             double half_w = body_w / 2.0;
             for (int i = 0, li = 0, ri = 0; i < n; i++) {
                 if (sym.pins[i].side == 0) {
-                    double y_off = -(left_n - 1) * PIN_PITCH / 2.0 + li * PIN_PITCH;
+                    // Library Y-up: negative = below center
+                    // Schematic Y-down: negate -> positive = below center
+                    double lib_y = -(left_n - 1) * PIN_PITCH / 2.0 + li * PIN_PITCH;
                     sym.pins[i].x = -(half_w + PIN_LEN);
-                    sym.pins[i].y = y_off;
+                    sym.pins[i].y = -lib_y; // negate for schematic-relative
                     li++;
                 } else {
-                    double y_off = -(right_n - 1) * PIN_PITCH / 2.0 + ri * PIN_PITCH;
+                    double lib_y = -(right_n - 1) * PIN_PITCH / 2.0 + ri * PIN_PITCH;
                     sym.pins[i].x = half_w + PIN_LEN;
-                    sym.pins[i].y = y_off;
+                    sym.pins[i].y = -lib_y; // negate for schematic-relative
                     ri++;
                 }
             }
@@ -502,6 +516,11 @@ static bool natural_less(const std::string& a, const std::string& b) {
 
 void SchematicWriter::layout_components(const PcbModel& model) {
     instances_.clear();
+    chain_trees_.clear();
+    wire_segments_.clear();
+    junctions_.clear();
+    placed_instances_.clear();
+    net_components_.clear();
 
     // Build instance list, skipping components whose footprint has no pads
     for (auto& comp : model.components) {
@@ -521,28 +540,461 @@ void SchematicWriter::layout_components(const PcbModel& model) {
             return natural_less(a.refdes, b.refdes);
         });
 
-    // Grid placement (all positions snapped to 1.27mm grid)
-    double x = snap(30.48);  // left margin
-    double y = snap(30.48);  // top margin
-    double col_max_y = y;
+    // Phase 1: Connectivity analysis
+    build_net_components_map();
+    int hub_idx = find_hub_component();
+
+    if (hub_idx >= 0) {
+        // Phase 2: Chain extraction
+        build_chain_trees(hub_idx);
+
+        // Phase 3: Placement
+        place_chains();
+
+        // Phase 4: Wire computation
+        compute_wires();
+
+        log("Chain layout: " + std::to_string(placed_instances_.size()) + " of " +
+            std::to_string(instances_.size()) + " components placed in chains");
+    }
+
+    // Phase 5: Fallback grid placement for unplaced components
+    double grid_x = snap(30.48);
+    // Place fallback below the chain layout
+    double grid_y = snap(30.48);
+    if (!placed_instances_.empty()) {
+        // Find max Y of placed components
+        double max_y = 0;
+        for (int idx : placed_instances_) {
+            auto& inst = instances_[idx];
+            auto& sym = symbol_defs_[inst.footprint_name];
+            double bottom = inst.y + sym.body_height / 2.0 + 10.0;
+            if (bottom > max_y) max_y = bottom;
+        }
+        grid_y = snap(max_y + ROW_SPACING);
+    }
+
     int col_count = 0;
     int max_per_col = 8;
 
-    for (auto& inst : instances_) {
+    for (int i = 0; i < (int)instances_.size(); i++) {
+        if (placed_instances_.count(i)) continue;
+
+        auto& inst = instances_[i];
         auto& sym = symbol_defs_[inst.footprint_name];
         double cell_h = snap(sym.body_height + GRID_MARGIN);
 
         if (col_count >= max_per_col) {
-            x += GRID_CELL_W;
-            y = snap(30.48);
+            grid_x += GRID_CELL_W;
+            grid_y = snap(placed_instances_.empty() ? 30.48 : grid_y);
             col_count = 0;
         }
 
-        inst.x = snap(x);
-        inst.y = snap(y + sym.body_height / 2.0);
-        y += cell_h;
-        if (y > col_max_y) col_max_y = y;
+        inst.x = snap(grid_x);
+        inst.y = snap(grid_y + sym.body_height / 2.0);
+        grid_y += cell_h;
         col_count++;
+    }
+}
+
+// ── Pin position and rotation helpers ────────────────────────────────
+
+std::pair<double, double> SchematicWriter::pin_schematic_pos(int inst_idx,
+                                                              const std::string& pin_name) const {
+    auto& inst = instances_[inst_idx];
+    auto& sym = symbol_defs_.at(inst.footprint_name);
+    double px = 0, py = 0;
+    for (auto& pin : sym.pins) {
+        if (pin.name == pin_name) { px = pin.x; py = pin.y; break; }
+    }
+    // Apply rotation (CW in Y-down coords)
+    double rx = px, ry = py;
+    switch (inst.rotation) {
+        case 0:   rx = px;  ry = py;  break;
+        case 90:  rx = py;  ry = -px; break;
+        case 180: rx = -px; ry = -py; break;
+        case 270: rx = -py; ry = px;  break;
+    }
+    return {inst.x + rx, inst.y + ry};
+}
+
+int SchematicWriter::rotation_for_pin_facing(int inst_idx, const std::string& pin_name,
+                                              int direction) const {
+    // direction: 0=left(-x), 1=right(+x), 2=up(-y), 3=down(+y)
+    // Find the pin's local position in the symbol def
+    auto& inst = instances_[inst_idx];
+    auto& sym = symbol_defs_.at(inst.footprint_name);
+    double px = 0, py = 0;
+    for (auto& pin : sym.pins) {
+        if (pin.name == pin_name) { px = pin.x; py = pin.y; break; }
+    }
+    // Try each rotation and see which puts the pin in the desired direction
+    int rotations[] = {0, 90, 180, 270};
+    for (int rot : rotations) {
+        double rx = px, ry = py;
+        switch (rot) {
+            case 0:   rx = px;  ry = py;  break;
+            case 90:  rx = py;  ry = -px; break;
+            case 180: rx = -px; ry = -py; break;
+            case 270: rx = -py; ry = px;  break;
+        }
+        bool match = false;
+        switch (direction) {
+            case 0: match = (rx < -0.1 && std::abs(ry) < 0.1); break; // left
+            case 1: match = (rx > 0.1 && std::abs(ry) < 0.1);  break; // right
+            case 2: match = (ry < -0.1 && std::abs(rx) < 0.1); break; // up
+            case 3: match = (ry > 0.1 && std::abs(rx) < 0.1);  break; // down
+        }
+        if (match) return rot;
+    }
+    return 0; // fallback
+}
+
+// ── Connectivity analysis ───────────────────────────────────────────
+
+void SchematicWriter::build_net_components_map() {
+    net_components_.clear();
+    for (int i = 0; i < (int)instances_.size(); i++) {
+        auto& inst = instances_[i];
+        if (!inst.comp) continue;
+        for (auto& [pin_name, net_name] : inst.comp->pin_net_map) {
+            if (net_name.empty() || net_name == "No Net") continue;
+            if (is_power_net(net_name)) continue;
+            net_components_[net_name].push_back({i, pin_name});
+        }
+    }
+}
+
+int SchematicWriter::find_hub_component() {
+    // Score each component by number of distinct signal nets
+    std::map<int, int> scores;
+    for (auto& [net_name, comps] : net_components_) {
+        std::set<int> unique_instances;
+        for (auto& [idx, pin] : comps) unique_instances.insert(idx);
+        for (int idx : unique_instances) scores[idx]++;
+    }
+    int best_idx = -1, best_score = 0;
+    for (auto& [idx, score] : scores) {
+        if (score > best_score) {
+            best_score = score;
+            best_idx = idx;
+        }
+    }
+    if (best_idx >= 0) {
+        log("Hub component: " + instances_[best_idx].refdes +
+            " with " + std::to_string(best_score) + " signal nets");
+    }
+    return best_idx;
+}
+
+// ── Chain extraction (DFS from hub) ─────────────────────────────────
+
+void SchematicWriter::build_chain_trees(int hub_idx) {
+    chain_trees_.clear();
+    placed_instances_.clear();
+    placed_instances_.insert(hub_idx);
+
+    auto& hub_inst = instances_[hub_idx];
+    if (!hub_inst.comp) return;
+    auto& hub_sym = symbol_defs_[hub_inst.footprint_name];
+
+    // For each hub pin with a signal net, create a chain tree
+    for (auto& pin : hub_sym.pins) {
+        auto net_it = hub_inst.comp->pin_net_map.find(pin.name);
+        if (net_it == hub_inst.comp->pin_net_map.end()) continue;
+        const std::string& net_name = net_it->second;
+        if (net_name.empty() || net_name == "No Net" || is_power_net(net_name)) continue;
+
+        auto nc_it = net_components_.find(net_name);
+        if (nc_it == net_components_.end()) continue;
+
+        ChainTree tree;
+        tree.hub_instance_idx = hub_idx;
+        tree.hub_pin = pin.name;
+        tree.net_name = net_name;
+
+        // Find all unvisited components on this net
+        for (auto& [comp_idx, comp_pin] : nc_it->second) {
+            if (placed_instances_.count(comp_idx)) continue;
+            placed_instances_.insert(comp_idx);
+
+            ChainNode node = extend_chain(comp_idx, net_name, comp_pin);
+            tree.roots.push_back(std::move(node));
+        }
+
+        if (!tree.roots.empty()) {
+            // Reorder roots: deepest chain first (becomes main horizontal chain)
+            // Shorter chains become vertical T-branches
+            std::function<int(const ChainNode&)> chain_depth;
+            chain_depth = [&](const ChainNode& n) -> int {
+                int d = 1;
+                for (auto& b : n.branches) d = std::max(d, 1 + chain_depth(b));
+                return d;
+            };
+            std::sort(tree.roots.begin(), tree.roots.end(),
+                [&](const ChainNode& a, const ChainNode& b) {
+                    return chain_depth(a) > chain_depth(b);
+                });
+
+            chain_trees_.push_back(std::move(tree));
+        }
+    }
+}
+
+SchematicWriter::ChainNode SchematicWriter::extend_chain(int inst_idx,
+                                                          const std::string& connecting_net,
+                                                          const std::string& inward_pin) {
+    ChainNode node;
+    node.instance_idx = inst_idx;
+    node.connecting_net = connecting_net;
+    node.inward_pin = inward_pin;
+
+    auto& inst = instances_[inst_idx];
+    auto& sym = symbol_defs_[inst.footprint_name];
+
+    // For 2-pin components, find the outward pin (the one that isn't inward)
+    if (sym.pins.size() == 2) {
+        for (auto& pin : sym.pins) {
+            if (pin.name != inward_pin) {
+                node.outward_pin = pin.name;
+                break;
+            }
+        }
+
+        // Follow outward pin's net to find next components
+        if (!node.outward_pin.empty() && inst.comp) {
+            auto net_it = inst.comp->pin_net_map.find(node.outward_pin);
+            if (net_it != inst.comp->pin_net_map.end() &&
+                !net_it->second.empty() && net_it->second != "No Net" &&
+                !is_power_net(net_it->second)) {
+
+                const std::string& next_net = net_it->second;
+                auto nc_it = net_components_.find(next_net);
+                if (nc_it != net_components_.end()) {
+                    for (auto& [comp_idx, comp_pin] : nc_it->second) {
+                        if (placed_instances_.count(comp_idx)) continue;
+                        placed_instances_.insert(comp_idx);
+
+                        ChainNode child = extend_chain(comp_idx, next_net, comp_pin);
+                        node.branches.push_back(std::move(child));
+                    }
+                }
+            }
+        }
+    }
+    // Multi-pin non-hub and 1-pin components: leaf nodes, no extension
+
+    return node;
+}
+
+// ── Chain placement ─────────────────────────────────────────────────
+
+void SchematicWriter::place_chains() {
+    if (chain_trees_.empty()) return;
+
+    int hub_idx = chain_trees_[0].hub_instance_idx;
+    auto& hub_inst = instances_[hub_idx];
+    auto& hub_sym = symbol_defs_[hub_inst.footprint_name];
+
+    // Count chain trees to determine layout spacing
+    int num_chains = (int)chain_trees_.size();
+
+    // Place chains in rows, each row has enough vertical space for branches
+    // Calculate total height needed
+    double row_start_y = snap(40.0);
+    double current_row_y = row_start_y;
+
+    // Calculate max branch depth for a chain tree (how far branches extend)
+    std::function<int(const ChainNode&)> max_depth;
+    max_depth = [&](const ChainNode& node) -> int {
+        int d = 1;
+        for (auto& b : node.branches) {
+            d = std::max(d, 1 + max_depth(b));
+        }
+        return d;
+    };
+
+    // First pass: assign each chain a row Y position with adequate spacing
+    std::vector<double> chain_row_y(num_chains);
+    for (int ci = 0; ci < num_chains; ci++) {
+        chain_row_y[ci] = snap(current_row_y);
+        // Height: base + downward branch extent
+        int max_branch_depth = 0;
+        int branch_count = 0;
+        for (auto& root : chain_trees_[ci].roots) {
+            max_branch_depth = std::max(max_branch_depth, max_depth(root));
+            branch_count += (int)root.branches.size();
+        }
+        // Simple chains (single node, no branches): just need basic spacing
+        double row_height;
+        if (branch_count == 0 && chain_trees_[ci].roots.size() <= 1) {
+            row_height = 15.24; // compact for single-component chains
+        } else {
+            row_height = 12.7 + max_branch_depth * BRANCH_SPACING +
+                         std::max(0, (int)chain_trees_[ci].roots.size() - 1) * BRANCH_SPACING;
+        }
+        current_row_y += row_height;
+    }
+
+    // Place hub to the right, vertically centered on the chains
+    double hub_center_y = (chain_row_y.front() + chain_row_y.back()) / 2.0;
+    double hub_x = snap(200.0);
+    hub_inst.x = hub_x;
+    hub_inst.y = snap(hub_center_y);
+    hub_inst.rotation = 0;
+
+    log("Placed hub " + hub_inst.refdes + " at (" + fmt(hub_inst.x) + ", " + fmt(hub_inst.y) + ")");
+
+    // Place chains extending left from hub
+    // For each chain, draw a wire from the hub pin to the row Y, then left to the chain
+    for (int ci = 0; ci < num_chains; ci++) {
+        auto& tree = chain_trees_[ci];
+        auto [hpx, hpy] = pin_schematic_pos(hub_idx, tree.hub_pin);
+
+        double chain_y = chain_row_y[ci];
+        double chain_x = hpx - CHAIN_SPACING;
+
+        // Wire from hub pin to chain row (L-shaped if different Y)
+        // This will be handled by compute_wires through the root node positions
+
+        for (size_t ri = 0; ri < tree.roots.size(); ri++) {
+            auto& root = tree.roots[ri];
+            if (ri == 0) {
+                // Main root: place horizontally extending left at chain row Y
+                place_node_horizontal(root, chain_x, chain_y, false);
+            } else {
+                // T-branch: always extend downward to avoid intruding into other chains
+                double branch_y = chain_y + BRANCH_SPACING * ri;
+                place_node_vertical(root, chain_x, branch_y, true);
+            }
+        }
+    }
+}
+
+void SchematicWriter::place_node_horizontal(ChainNode& node, double x, double y,
+                                             bool facing_right) {
+    auto& inst = instances_[node.instance_idx];
+    auto& sym = symbol_defs_[inst.footprint_name];
+
+    // Determine rotation: inward pin should face right (toward hub) if !facing_right chain
+    // The chain extends left, so the inward pin needs to face RIGHT (direction=1)
+    int desired_dir = facing_right ? 0 : 1; // inward pin faces toward hub
+    inst.rotation = rotation_for_pin_facing(node.instance_idx, node.inward_pin, desired_dir);
+    inst.x = snap(x);
+    inst.y = snap(y);
+
+    log("  Placed " + inst.refdes + " at (" + fmt(inst.x) + ", " + fmt(inst.y) +
+        ") rot=" + std::to_string(inst.rotation));
+
+    // Continue chain from outward pin
+    if (!node.outward_pin.empty() && !node.branches.empty()) {
+        auto [opx, opy] = pin_schematic_pos(node.instance_idx, node.outward_pin);
+
+        for (size_t bi = 0; bi < node.branches.size(); bi++) {
+            auto& branch = node.branches[bi];
+            if (bi == 0) {
+                // Main continuation: horizontal
+                double next_x = facing_right ? opx + CHAIN_SPACING : opx - CHAIN_SPACING;
+                place_node_horizontal(branch, next_x, opy, facing_right);
+            } else {
+                // T-branch: always extend downward
+                double branch_y = opy + BRANCH_SPACING * bi;
+                place_node_vertical(branch, opx, branch_y, true);
+            }
+        }
+    }
+}
+
+void SchematicWriter::place_node_vertical(ChainNode& node, double x, double y,
+                                           bool facing_down) {
+    auto& inst = instances_[node.instance_idx];
+
+    // Inward pin should face UP (toward junction) if facing_down, or DOWN if facing_up
+    int desired_dir = facing_down ? 2 : 3; // 2=up, 3=down
+    inst.rotation = rotation_for_pin_facing(node.instance_idx, node.inward_pin, desired_dir);
+    inst.x = snap(x);
+    inst.y = snap(y);
+
+    log("  Placed " + inst.refdes + " (vert) at (" + fmt(inst.x) + ", " + fmt(inst.y) +
+        ") rot=" + std::to_string(inst.rotation));
+
+    // Continue chain vertically
+    if (!node.outward_pin.empty() && !node.branches.empty()) {
+        auto [opx, opy] = pin_schematic_pos(node.instance_idx, node.outward_pin);
+
+        for (size_t bi = 0; bi < node.branches.size(); bi++) {
+            auto& branch = node.branches[bi];
+            double next_y = facing_down ? opy + BRANCH_SPACING : opy - BRANCH_SPACING;
+            place_node_vertical(branch, opx, next_y, facing_down);
+        }
+    }
+}
+
+// ── Wire computation ────────────────────────────────────────────────
+
+void SchematicWriter::compute_wires() {
+    wire_segments_.clear();
+    junctions_.clear();
+
+    for (auto& tree : chain_trees_) {
+        // Wire from hub pin to each root
+        auto [hpx, hpy] = pin_schematic_pos(tree.hub_instance_idx, tree.hub_pin);
+
+        for (size_t ri = 0; ri < tree.roots.size(); ri++) {
+            auto& root = tree.roots[ri];
+            auto [rpx, rpy] = pin_schematic_pos(root.instance_idx, root.inward_pin);
+
+            // Draw wire from hub pin to root's inward pin
+            draw_routed_wire(hpx, hpy, rpx, rpy);
+
+            // If multiple roots on same net, add junction at hub pin
+            if (tree.roots.size() > 1 && ri > 0) {
+                junctions_.push_back({hpx, hpy});
+            }
+
+            // Recursively draw wires within the chain
+            draw_chain_wires(root, rpx, rpy);
+        }
+    }
+}
+
+void SchematicWriter::draw_chain_wires(const ChainNode& node,
+                                        double parent_px, double parent_py) {
+    if (node.outward_pin.empty() || node.branches.empty()) return;
+
+    auto [opx, opy] = pin_schematic_pos(node.instance_idx, node.outward_pin);
+
+    for (size_t bi = 0; bi < node.branches.size(); bi++) {
+        auto& branch = node.branches[bi];
+        auto [bpx, bpy] = pin_schematic_pos(branch.instance_idx, branch.inward_pin);
+
+        // Wire from this node's outward pin to branch's inward pin
+        draw_routed_wire(opx, opy, bpx, bpy);
+
+        // Junction if multiple branches
+        if (node.branches.size() > 1 && bi > 0) {
+            junctions_.push_back({opx, opy});
+        }
+
+        // Recurse
+        draw_chain_wires(branch, bpx, bpy);
+    }
+}
+
+void SchematicWriter::draw_routed_wire(double x1, double y1, double x2, double y2) {
+    x1 = snap(x1); y1 = snap(y1);
+    x2 = snap(x2); y2 = snap(y2);
+
+    if (std::abs(y1 - y2) < 0.01) {
+        // Horizontal wire - direct
+        wire_segments_.push_back({x1, y1, x2, y2});
+    } else if (std::abs(x1 - x2) < 0.01) {
+        // Vertical wire - direct
+        wire_segments_.push_back({x1, y1, x2, y2});
+    } else {
+        // L-shaped wire: horizontal first, then vertical
+        wire_segments_.push_back({x1, y1, x2, y1});
+        wire_segments_.push_back({x2, y1, x2, y2});
     }
 }
 
@@ -605,11 +1057,12 @@ void SchematicWriter::write_lib_symbols(std::ostream& out) {
             out << "      )\n";
 
             // Symbol pins (unit 1, style 1)
+            // PinDef stores schematic-relative coords; negate Y for library Y-up
             out << "      (symbol " << sq(fp_name + "_1_1") << "\n";
             for (auto& pin : sym.pins) {
                 int angle = (pin.side == 0) ? 0 : 180;
                 out << "        (pin " << pin.type << " line"
-                    << " (at " << fmt(pin.x) << " " << fmt(pin.y) << " " << angle << ")"
+                    << " (at " << fmt(pin.x) << " " << fmt(-pin.y) << " " << angle << ")"
                     << " (length " << fmt(PIN_LEN) << ")"
                     << " (name " << sq(pin.name) << " (effects (font (size 1.27 1.27))))"
                     << " (number " << sq(pin.name) << " (effects (font (size 1.27 1.27)))))\n";
@@ -632,26 +1085,60 @@ void SchematicWriter::write_wires_and_labels(std::ostream& out, const PcbModel& 
     power_ports_.clear();
     int pwr_index = 1;
 
-    // For each placed symbol, emit wire stubs and labels for each pin
-    for (auto& inst : instances_) {
+    // ── Emit pre-computed wires from chain layout ──
+    for (auto& wire : wire_segments_) {
+        std::string wire_uuid = generate_uuid_from_seed(
+            "cwire_" + fmt(wire.x1) + "_" + fmt(wire.y1) + "_" +
+            fmt(wire.x2) + "_" + fmt(wire.y2));
+        out << "  (wire (pts (xy " << fmt(wire.x1) << " " << fmt(wire.y1) << ")"
+            << " (xy " << fmt(wire.x2) << " " << fmt(wire.y2) << "))\n"
+            << "    (stroke (width 0) (type default))\n"
+            << "    (uuid \"" << wire_uuid << "\"))\n";
+    }
+
+    // ── Emit junctions ──
+    for (auto& jct : junctions_) {
+        std::string jct_uuid = generate_uuid_from_seed(
+            "jct_" + fmt(jct.x) + "_" + fmt(jct.y));
+        out << "  (junction (at " << fmt(jct.x) << " " << fmt(jct.y) << ")"
+            << " (diameter 0) (color 0 0 0 0)\n"
+            << "    (uuid \"" << jct_uuid << "\"))\n";
+    }
+
+    // ── For chain-placed components: emit power ports at chain endpoints ──
+    // Also handle pins that connect to power nets (wire stub + power port)
+    // And pins with no chain wire (need net labels as fallback)
+    std::set<std::string> chain_wired_pins; // "refdes:pin" pairs that have chain wires
+
+    // Build set of pins connected by chain wires
+    for (auto& tree : chain_trees_) {
+        // Hub pin -> root connections
+        for (auto& root : tree.roots) {
+            chain_wired_pins.insert(instances_[tree.hub_instance_idx].refdes + ":" + tree.hub_pin);
+            chain_wired_pins.insert(instances_[root.instance_idx].refdes + ":" + root.inward_pin);
+        }
+        // Recursively mark wired pins in branches
+        std::function<void(const ChainNode&)> mark_wired;
+        mark_wired = [&](const ChainNode& node) {
+            for (auto& branch : node.branches) {
+                if (!node.outward_pin.empty()) {
+                    chain_wired_pins.insert(instances_[node.instance_idx].refdes + ":" + node.outward_pin);
+                }
+                chain_wired_pins.insert(instances_[branch.instance_idx].refdes + ":" + branch.inward_pin);
+                mark_wired(branch);
+            }
+        };
+        for (auto& root : tree.roots) mark_wired(root);
+    }
+
+    // ── For ALL components: handle pins not covered by chain wires ──
+    for (int i = 0; i < (int)instances_.size(); i++) {
+        auto& inst = instances_[i];
         auto& sym = symbol_defs_[inst.footprint_name];
         if (!inst.comp) continue;
 
         for (auto& pin : sym.pins) {
-            // Pin endpoint in schematic coordinates
-            double px = inst.x + pin.x;
-            double py = inst.y + pin.y;
-
-            // Wire stub extends outward from pin
-            double stub_len = PIN_PITCH; // 2.54mm
-            double wx, wy;
-            if (pin.side == 0) {
-                wx = px - stub_len;
-                wy = py;
-            } else {
-                wx = px + stub_len;
-                wy = py;
-            }
+            std::string pin_key = inst.refdes + ":" + pin.name;
 
             // Look up net for this pin
             auto net_it = inst.comp->pin_net_map.find(pin.name);
@@ -659,8 +1146,35 @@ void SchematicWriter::write_wires_and_labels(std::ostream& out, const PcbModel& 
                            && !net_it->second.empty()
                            && net_it->second != "No Net");
 
-            if (has_net) {
-                const std::string& net_name = net_it->second;
+            if (!has_net) {
+                // No-connect marker at pin position
+                auto [px, py] = pin_schematic_pos(i, pin.name);
+                std::string nc_uuid = generate_uuid_from_seed(
+                    "nc_" + inst.refdes + "_" + pin.name);
+                out << "  (no_connect (at " << fmt(px) << " " << fmt(py) << ")"
+                    << " (uuid \"" << nc_uuid << "\"))\n";
+                continue;
+            }
+
+            const std::string& net_name = net_it->second;
+
+            // Pin endpoint in schematic coordinates
+            auto [px, py] = pin_schematic_pos(i, pin.name);
+
+            if (is_power_net(net_name) && opts_.use_kicad_symbols) {
+                // Power pin: always emit wire stub + power port
+                // Determine stub direction from pin's rotated position
+                double dx = px - inst.x;
+                double dy = py - inst.y;
+                double stub_len = PIN_PITCH;
+                double wx = px, wy = py;
+
+                // Stub extends away from component center
+                if (std::abs(dx) > std::abs(dy)) {
+                    wx = px + (dx > 0 ? stub_len : -stub_len);
+                } else {
+                    wy = py + (dy > 0 ? stub_len : -stub_len);
+                }
 
                 // Wire stub
                 std::string wire_uuid = generate_uuid_from_seed(
@@ -670,82 +1184,88 @@ void SchematicWriter::write_wires_and_labels(std::ostream& out, const PcbModel& 
                     << "    (stroke (width 0) (type default))\n"
                     << "    (uuid \"" << wire_uuid << "\"))\n";
 
-                if (opts_.use_kicad_symbols && is_power_net(net_name)) {
-                    // Place a power port symbol instead of a net label
-                    std::string sym_name = power_net_symbol_name(net_name);
-                    std::string lib_id = "power:" + sym_name;
+                // Power port symbol
+                std::string sym_name = power_net_symbol_name(net_name);
+                std::string lib_id = "power:" + sym_name;
+                std::string upper = sym_name;
+                std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+                bool is_ground = (upper == "GND" || upper == "GNDA" || upper == "GNDD" ||
+                                 upper == "VSS");
 
-                    // Determine orientation: GND points down, supplies point up
-                    std::string upper = sym_name;
-                    std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
-                    bool is_ground = (upper == "GND" || upper == "GNDA" || upper == "GNDD" ||
-                                     upper == "VSS");
-
-                    // Power port pin connects at (0,0) of the symbol.
-                    // GND: pin points down (angle 270 in symbol def → place at wire end)
-                    // +5V: pin points up (angle 90 in symbol def → place at wire end)
-                    // The power symbol is placed AT the wire end point.
-                    int angle = 0;
-                    if (is_ground) {
-                        // GND symbol should hang below the wire
-                        // Pin direction is 270 (down), symbol placed at wire end
-                        angle = 0; // no rotation needed, GND naturally points down
-                    } else {
-                        // Supply symbol points up naturally
-                        angle = 0;
-                    }
-
-                    // For horizontal wires, we need to rotate the power symbol
-                    // so it connects properly. Power pin is at (0,0).
-                    // If wire goes left (pin.side == 0), power port needs rotation
-                    // to connect the pin to the wire end.
-                    // Actually: place the power port at the wire end point.
-                    // Power symbols connect via their pin at local (0,0).
-                    // GND pin: at (0 0 270) means pin exits downward
-                    // +5V pin: at (0 0 90) means pin exits upward
-                    // For a horizontal wire, we rotate the power symbol 90 degrees.
-                    if (pin.side == 0) {
-                        // Wire goes left; power port should point left
+                // Determine power port angle based on stub direction
+                int angle = 0;
+                double sdx = wx - px, sdy = wy - py;
+                if (std::abs(sdx) > std::abs(sdy)) {
+                    // Horizontal stub
+                    if (sdx < 0) {
                         angle = is_ground ? 90 : 270;
                     } else {
-                        // Wire goes right; power port should point right
                         angle = is_ground ? 270 : 90;
                     }
-
-                    char refdes_buf[16];
-                    snprintf(refdes_buf, sizeof(refdes_buf), "#PWR%02d", pwr_index++);
-
-                    PowerPort pp;
-                    pp.net_name = net_name;
-                    pp.lib_id = lib_id;
-                    pp.refdes = refdes_buf;
-                    pp.x = wx;
-                    pp.y = wy;
-                    pp.angle = angle;
-                    pp.uuid = generate_uuid_from_seed("pwr_" + inst.refdes + "_" + pin.name);
-                    pp.pin_uuid = generate_uuid_from_seed("pwrpin_" + inst.refdes + "_" + pin.name);
-                    power_ports_.push_back(pp);
                 } else {
-                    // Regular net label
-                    int label_angle = (pin.side == 0) ? 180 : 0;
-                    std::string label_uuid = generate_uuid_from_seed(
-                        "label_" + inst.refdes + "_" + pin.name);
-                    out << "  (label " << sq(net_name)
-                        << " (at " << fmt(wx) << " " << fmt(wy) << " " << label_angle << ")\n"
-                        << "    (effects (font (size 1.27 1.27)) (justify left))\n"
-                        << "    (uuid \"" << label_uuid << "\"))\n";
+                    // Vertical stub
+                    if (sdy < 0) {
+                        angle = is_ground ? 180 : 0;
+                    } else {
+                        angle = is_ground ? 0 : 180;
+                    }
                 }
+
+                char refdes_buf[16];
+                snprintf(refdes_buf, sizeof(refdes_buf), "#PWR%02d", pwr_index++);
+
+                PowerPort pp;
+                pp.net_name = net_name;
+                pp.lib_id = lib_id;
+                pp.refdes = refdes_buf;
+                pp.x = wx;
+                pp.y = wy;
+                pp.angle = angle;
+                pp.uuid = generate_uuid_from_seed("pwr_" + inst.refdes + "_" + pin.name);
+                pp.pin_uuid = generate_uuid_from_seed("pwrpin_" + inst.refdes + "_" + pin.name);
+                power_ports_.push_back(pp);
+
+            } else if (chain_wired_pins.count(pin_key)) {
+                // This pin is connected by a chain wire - no label needed
+                continue;
+
             } else {
-                // No-connect marker at pin end
-                std::string nc_uuid = generate_uuid_from_seed(
-                    "nc_" + inst.refdes + "_" + pin.name);
-                out << "  (no_connect (at " << fmt(px) << " " << fmt(py) << ")"
-                    << " (uuid \"" << nc_uuid << "\"))\n";
+                // Fallback: wire stub + net label (for unplaced components or
+                // inter-chain connections)
+                double dx = px - inst.x;
+                double dy = py - inst.y;
+                double stub_len = PIN_PITCH;
+                double wx = px, wy = py;
+                int label_angle = 0;
+
+                if (std::abs(dx) > std::abs(dy)) {
+                    wx = px + (dx > 0 ? stub_len : -stub_len);
+                    label_angle = (dx > 0) ? 0 : 180;
+                } else {
+                    wy = py + (dy > 0 ? stub_len : -stub_len);
+                    label_angle = (dy > 0) ? 270 : 90;
+                }
+
+                // Wire stub
+                std::string wire_uuid = generate_uuid_from_seed(
+                    "wire_" + inst.refdes + "_" + pin.name);
+                out << "  (wire (pts (xy " << fmt(px) << " " << fmt(py) << ")"
+                    << " (xy " << fmt(wx) << " " << fmt(wy) << "))\n"
+                    << "    (stroke (width 0) (type default))\n"
+                    << "    (uuid \"" << wire_uuid << "\"))\n";
+
+                // Net label
+                std::string label_uuid = generate_uuid_from_seed(
+                    "label_" + inst.refdes + "_" + pin.name);
+                out << "  (label " << sq(net_name)
+                    << " (at " << fmt(wx) << " " << fmt(wy) << " " << label_angle << ")\n"
+                    << "    (effects (font (size 1.27 1.27)) (justify left))\n"
+                    << "    (uuid \"" << label_uuid << "\"))\n";
             }
         }
     }
 
-    // Write power port symbol instances
+    // ── Write power port symbol instances ──
     for (auto& pp : power_ports_) {
         out << "  (symbol\n"
             << "    (lib_id " << sq(pp.lib_id) << ")\n"
@@ -781,17 +1301,26 @@ void SchematicWriter::write_symbol_instances(std::ostream& out, const PcbModel& 
 
         out << "  (symbol\n"
             << "    (lib_id " << sq(lib_id) << ")\n"
-            << "    (at " << fmt(inst.x) << " " << fmt(inst.y) << " 0)\n"
+            << "    (at " << fmt(inst.x) << " " << fmt(inst.y) << " " << inst.rotation << ")\n"
             << "    (uuid \"" << sym_uuid << "\")\n";
 
-        // Properties
+        // Properties - position them relative to symbol, adjusted for rotation
+        double ref_dx = 0, ref_dy = -(sym.body_height / 2.0 + 2.54);
+        double val_dx = 0, val_dy = (sym.body_height / 2.0 + 2.54);
+        // For rotated symbols, swap property offsets
+        if (inst.rotation == 90 || inst.rotation == 270) {
+            ref_dx = -(sym.body_height / 2.0 + 2.54);
+            ref_dy = 0;
+            val_dx = (sym.body_height / 2.0 + 2.54);
+            val_dy = 0;
+        }
         out << "    (property \"Reference\" " << sq(inst.refdes)
-            << " (at " << fmt(inst.x) << " "
-            << fmt(inst.y - sym.body_height / 2.0 - 2.54) << " 0)"
+            << " (at " << fmt(inst.x + ref_dx) << " "
+            << fmt(inst.y + ref_dy) << " 0)"
             << " (effects (font (size 1.27 1.27))))\n";
         out << "    (property \"Value\" " << sq(inst.value)
-            << " (at " << fmt(inst.x) << " "
-            << fmt(inst.y + sym.body_height / 2.0 + 2.54) << " 0)"
+            << " (at " << fmt(inst.x + val_dx) << " "
+            << fmt(inst.y + val_dy) << " 0)"
             << " (effects (font (size 1.27 1.27))))\n";
         out << "    (property \"Footprint\" " << sq("ipc2581:" + inst.footprint_name)
             << " (at 0 0 0) (effects (font (size 1.27 1.27)) hide))\n";
