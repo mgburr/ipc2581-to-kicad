@@ -726,6 +726,63 @@ void Ipc2581Parser::parse_packages(const pugi::xml_node& step, PcbModel& model) 
                         gi.width = to_mm(parse_double(feat.attribute("lineWidth").as_string(), 0.1));
                         gi.layer = layer;
                         fp.graphics.push_back(gi);
+                    } else if (ftag == "Polygon" || ftag == "Polyline") {
+                        // Get line width from LineDesc sibling
+                        auto line_desc = child.child("LineDesc");
+                        double lw = 0.1;
+                        if (line_desc) {
+                            lw = to_mm(parse_double(line_desc.attribute("lineWidth").as_string(), 0.1));
+                            if (lw <= 0) lw = 0.1;
+                        }
+                        // Parse polygon points into line segments
+                        Point first_pt, last_pt;
+                        bool has_first = false;
+                        for (auto pchild : feat.children()) {
+                            std::string ptag = pchild.name();
+                            if (ptag == "PolyBegin") {
+                                double px = to_mm(parse_double(pchild.attribute("x").as_string()));
+                                double py = to_mm(parse_double(pchild.attribute("y").as_string()));
+                                first_pt = last_pt = ipc_to_kicad_coords({px, py});
+                                has_first = true;
+                            } else if (ptag == "PolyStepSegment") {
+                                double px = to_mm(parse_double(pchild.attribute("x").as_string()));
+                                double py = to_mm(parse_double(pchild.attribute("y").as_string()));
+                                Point pt = ipc_to_kicad_coords({px, py});
+                                GraphicItem seg;
+                                seg.kind = GraphicItem::LINE;
+                                seg.start = last_pt;
+                                seg.end = pt;
+                                seg.width = lw;
+                                seg.layer = layer;
+                                fp.graphics.push_back(seg);
+                                last_pt = pt;
+                            } else if (ptag == "PolyStepCurve") {
+                                double px = to_mm(parse_double(pchild.attribute("x").as_string()));
+                                double py = to_mm(parse_double(pchild.attribute("y").as_string()));
+                                double cx = to_mm(parse_double(pchild.attribute("centerX").as_string()));
+                                double cy = to_mm(parse_double(pchild.attribute("centerY").as_string()));
+                                bool cw = parse_bool(pchild.attribute("clockwise").as_string(), false);
+                                Point end_pt = ipc_to_kicad_coords({px, py});
+                                Point center = ipc_to_kicad_coords({cx, cy});
+                                double start_ang = std::atan2(last_pt.y - center.y, last_pt.x - center.x);
+                                double end_ang = std::atan2(end_pt.y - center.y, end_pt.x - center.x);
+                                double sweep = end_ang - start_ang;
+                                if (cw) { if (sweep <= 0) sweep += 2 * PI; }
+                                else { if (sweep >= 0) sweep -= 2 * PI; }
+                                // Convert center+sweep to start/mid/end for KiCad
+                                auto arc_geom = arc_center_to_mid(last_pt, center,
+                                    rad_to_deg(sweep), lw, layer);
+                                GraphicItem arc;
+                                arc.kind = GraphicItem::ARC;
+                                arc.start = arc_geom.start;
+                                arc.center = arc_geom.mid; // stored as 'center' but used as 'mid' by writer
+                                arc.end = arc_geom.end;
+                                arc.width = lw;
+                                arc.layer = layer;
+                                fp.graphics.push_back(arc);
+                                last_pt = end_pt;
+                            }
+                        }
                     }
                 }
             }
