@@ -96,6 +96,7 @@ bool Ipc2581Parser::parse(const std::string& filename, PcbModel& model) {
     parse_padstack_rotations(step, model);
     parse_padstack_vias(step, model);
     parse_layer_features(step, model);
+    attach_graphics_to_components(model);
 
     log("Parse complete: " + std::to_string(model.components.size()) + " components, " +
         std::to_string(model.traces.size()) + " traces, " +
@@ -213,7 +214,7 @@ void Ipc2581Parser::build_layer_mapping(PcbModel& model) {
                 l.kicad_id = 36;
             }
             l.type = "user";
-        } else if (func == "SILKSCREEN" || func == "SILK_SCREEN") {
+        } else if (func == "SILKSCREEN" || func == "SILK_SCREEN" || func == "LEGEND") {
             if (side == "TOP" || side.empty()) {
                 l.kicad_name = "F.SilkS";
                 l.kicad_id = 37;
@@ -239,8 +240,31 @@ void Ipc2581Parser::build_layer_mapping(PcbModel& model) {
             l.kicad_name = ""; // drills are handled specially
             l.type = "user";
         } else if (func == "DOCUMENT" || func == "DOCUMENTATION") {
-            l.kicad_name = "Cmts.User";
-            l.kicad_id = 46;
+            // Use layer name heuristics for DOCUMENT layers
+            std::string name_upper = l.ipc_name;
+            std::transform(name_upper.begin(), name_upper.end(), name_upper.begin(), ::toupper);
+            if (name_upper.find("DESIGNATOR") != std::string::npos ||
+                name_upper.find("OVERLAY") != std::string::npos) {
+                // Designator/overlay → silkscreen
+                if (name_upper.find("BOTTOM") != std::string::npos) {
+                    l.kicad_name = "B.SilkS";
+                    l.kicad_id = 36;
+                } else {
+                    l.kicad_name = "F.SilkS";
+                    l.kicad_id = 37;
+                }
+            } else if (name_upper.find("ASSEMBLY") != std::string::npos) {
+                if (name_upper.find("BOTTOM") != std::string::npos) {
+                    l.kicad_name = "B.Fab";
+                    l.kicad_id = 48;
+                } else {
+                    l.kicad_name = "F.Fab";
+                    l.kicad_id = 49;
+                }
+            } else {
+                l.kicad_name = "Cmts.User";
+                l.kicad_id = 46;
+            }
             l.type = "user";
         } else {
             l.kicad_name = "Cmts.User";
@@ -1514,7 +1538,7 @@ void Ipc2581Parser::parse_layer_features(const pugi::xml_node& step, PcbModel& m
                             model.zones.push_back(zone);
                         }
                     } else {
-                        // Non-copper polygon → graphic
+                        // Non-copper polygon → graphic outline
                         GraphicItem gi;
                         gi.kind = GraphicItem::POLYGON;
                         gi.points = parse_polygon(outline_node);
@@ -1522,8 +1546,20 @@ void Ipc2581Parser::parse_layer_features(const pugi::xml_node& step, PcbModel& m
                             pt = ipc_to_kicad_coords(to_mm(pt));
                         }
                         gi.layer = kicad_layer;
-                        gi.fill = true;
+                        gi.fill = false;  // Outline only — KiCad gr_poly can't do holes
+                        gi.width = 0.1;   // Thin outline stroke
                         model.graphics.push_back(gi);
+
+                        // Also output cutout polygons as outlines
+                        for (auto& hole : hole_polys) {
+                            GraphicItem hi;
+                            hi.kind = GraphicItem::POLYGON;
+                            hi.points = hole;
+                            hi.layer = kicad_layer;
+                            hi.fill = false;
+                            hi.width = 0.1;
+                            model.graphics.push_back(hi);
+                        }
                     }
                 }
             }
@@ -1535,6 +1571,120 @@ void Ipc2581Parser::parse_layer_features(const pugi::xml_node& step, PcbModel& m
         std::to_string(model.vias.size()) + " vias, " +
         std::to_string(model.zones.size()) + " zones, " +
         std::to_string(model.graphics.size()) + " graphics");
+}
+
+// --- Attach board-level graphics to nearest components ---
+
+void Ipc2581Parser::attach_graphics_to_components(PcbModel& model) {
+    if (model.components.empty()) return;
+
+    // Helper: compute centroid of a graphic item
+    auto centroid = [](const GraphicItem& gi) -> Point {
+        if (gi.kind == GraphicItem::POLYGON && !gi.points.empty()) {
+            double sx = 0, sy = 0;
+            for (auto& pt : gi.points) { sx += pt.x; sy += pt.y; }
+            return {sx / gi.points.size(), sy / gi.points.size()};
+        }
+        if (gi.kind == GraphicItem::LINE) {
+            return {(gi.start.x + gi.end.x) / 2, (gi.start.y + gi.end.y) / 2};
+        }
+        if (gi.kind == GraphicItem::ARC) {
+            return {(gi.start.x + gi.end.x) / 2, (gi.start.y + gi.end.y) / 2};
+        }
+        if (gi.kind == GraphicItem::CIRCLE) {
+            return gi.center;
+        }
+        return gi.start;
+    };
+
+    // Helper: transform a point from board coords to footprint-local coords
+    auto board_to_local = [](Point pt, const ComponentInstance& comp) -> Point {
+        double dx = pt.x - comp.position.x;
+        double dy = pt.y - comp.position.y;
+        double rad = comp.rotation * M_PI / 180.0;
+        double cos_r = std::cos(rad);
+        double sin_r = std::sin(rad);
+        double lx = dx * cos_r + dy * sin_r;
+        double ly = -dx * sin_r + dy * cos_r;
+        if (comp.mirror) lx = -lx;
+        return {lx, ly};
+    };
+
+    // Helper: transform a graphic item to footprint-local coords
+    auto transform_graphic = [&](GraphicItem gi, const ComponentInstance& comp) -> GraphicItem {
+        if (gi.kind == GraphicItem::POLYGON) {
+            for (auto& pt : gi.points) {
+                pt = board_to_local(pt, comp);
+            }
+        } else if (gi.kind == GraphicItem::LINE) {
+            gi.start = board_to_local(gi.start, comp);
+            gi.end = board_to_local(gi.end, comp);
+        } else if (gi.kind == GraphicItem::ARC) {
+            gi.start = board_to_local(gi.start, comp);
+            gi.center = board_to_local(gi.center, comp);
+            gi.end = board_to_local(gi.end, comp);
+        } else if (gi.kind == GraphicItem::CIRCLE) {
+            gi.center = board_to_local(gi.center, comp);
+        }
+        return gi;
+    };
+
+    // Layers eligible for attachment (non-copper, non-edge-cuts)
+    auto is_attachable = [](const std::string& layer) -> bool {
+        if (layer.find(".Cu") != std::string::npos) return false;
+        if (layer == "Edge.Cuts") return false;
+        return true;
+    };
+
+    // Determine if a graphic's layer is side-specific
+    // Returns: 1 = front, -1 = back, 0 = either side
+    auto layer_side = [](const std::string& layer) -> int {
+        if (layer.substr(0, 2) == "F.") return 1;   // front
+        if (layer.substr(0, 2) == "B.") return -1;   // back
+        return 0;                                      // neutral (Cmts.User etc.)
+    };
+
+    const double THRESHOLD = 10.0; // mm - max distance to match
+    size_t attached = 0;
+    std::vector<GraphicItem> remaining;
+
+    for (auto& gi : model.graphics) {
+        if (!is_attachable(gi.layer)) {
+            remaining.push_back(gi);
+            continue;
+        }
+
+        Point c = centroid(gi);
+        int gside = layer_side(gi.layer);
+        double min_dist = 1e9;
+        int best = -1;
+        for (size_t i = 0; i < model.components.size(); i++) {
+            // Side matching: front graphics → front components only, etc.
+            if (gside != 0) {
+                bool comp_front = !model.components[i].mirror;
+                if ((gside == 1) != comp_front) continue;
+            }
+            double dx = c.x - model.components[i].position.x;
+            double dy = c.y - model.components[i].position.y;
+            double dist = std::sqrt(dx * dx + dy * dy);
+            if (dist < min_dist) {
+                min_dist = dist;
+                best = static_cast<int>(i);
+            }
+        }
+
+        if (best >= 0 && min_dist < THRESHOLD) {
+            auto local = transform_graphic(gi, model.components[best]);
+            model.components[best].instance_graphics.push_back(local);
+            attached++;
+        } else {
+            remaining.push_back(gi);
+        }
+    }
+
+    model.graphics = remaining;
+    log("Attached " + std::to_string(attached) + " graphics to components, " +
+        std::to_string(remaining.size()) + " remain board-level");
 }
 
 // --- Geometry Helpers ---

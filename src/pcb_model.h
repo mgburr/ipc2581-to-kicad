@@ -70,6 +70,8 @@ struct ComponentInstance {
     std::map<std::string, std::string> pin_net_map;
     // Per-pin local rotation (footprint-relative): pad_name -> degrees
     std::map<std::string, double> pin_rotation_map;
+    // Per-instance graphics (footprint-local coords, attached from board-level)
+    std::vector<GraphicItem> instance_graphics;
 };
 
 struct TraceSegment {

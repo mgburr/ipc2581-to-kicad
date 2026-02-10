@@ -68,6 +68,9 @@ private:
     // Build layer mapping after all layers are parsed
     void build_layer_mapping(PcbModel& model);
 
+    // Attach board-level graphics to nearest components
+    void attach_graphics_to_components(PcbModel& model);
+
     // Convert coordinates from IPC units to mm
     double to_mm(double val) const { return val * unit_scale_; }
     Point to_mm(const Point& pt) const { return {pt.x * unit_scale_, pt.y * unit_scale_}; }

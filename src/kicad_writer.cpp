@@ -448,6 +448,57 @@ void KicadWriter::write_footprint(std::ostream& out, const PcbModel& model,
         }
     }
 
+    // Per-instance graphics (attached from board-level, in local coords)
+    // No layer flipping needed — these already have absolute board-level layers
+    for (size_t i = 0; i < comp.instance_graphics.size(); i++) {
+        auto& gi = comp.instance_graphics[i];
+        std::string glayer = gi.layer;
+
+        if (gi.kind == GraphicItem::LINE) {
+            out << "    (fp_line (start " << fmt(gi.start.x) << " " << fmt(gi.start.y) << ")"
+                << " (end " << fmt(gi.end.x) << " " << fmt(gi.end.y) << ")"
+                << " (stroke (width " << fmt(gi.width) << ") (type solid))"
+                << " (layer \"" << glayer << "\")";
+            if (has_uuids()) {
+                out << " (uuid " << uuid_fmt("igline_" + comp.refdes + "_" + std::to_string(i)) << ")";
+            }
+            out << ")\n";
+        } else if (gi.kind == GraphicItem::ARC) {
+            out << "    (fp_arc (start " << fmt(gi.start.x) << " " << fmt(gi.start.y) << ")"
+                << " (mid " << fmt(gi.center.x) << " " << fmt(gi.center.y) << ")"
+                << " (end " << fmt(gi.end.x) << " " << fmt(gi.end.y) << ")"
+                << " (stroke (width " << fmt(gi.width) << ") (type solid))"
+                << " (layer \"" << glayer << "\")";
+            if (has_uuids()) {
+                out << " (uuid " << uuid_fmt("igarc_" + comp.refdes + "_" + std::to_string(i)) << ")";
+            }
+            out << ")\n";
+        } else if (gi.kind == GraphicItem::POLYGON) {
+            out << "    (fp_poly (pts";
+            for (auto& pt : gi.points) {
+                out << " (xy " << fmt(pt.x) << " " << fmt(pt.y) << ")";
+            }
+            out << ")"
+                << " (stroke (width " << fmt(gi.width) << ") (type solid))"
+                << " (fill " << (gi.fill ? "yes" : "none") << ")"
+                << " (layer \"" << glayer << "\")";
+            if (has_uuids()) {
+                out << " (uuid " << uuid_fmt("igpoly_" + comp.refdes + "_" + std::to_string(i)) << ")";
+            }
+            out << ")\n";
+        } else if (gi.kind == GraphicItem::CIRCLE) {
+            out << "    (fp_circle (center " << fmt(gi.center.x) << " " << fmt(gi.center.y) << ")"
+                << " (end " << fmt(gi.center.x + gi.radius) << " " << fmt(gi.center.y) << ")"
+                << " (stroke (width " << fmt(gi.width) << ") (type solid))"
+                << " (fill " << (gi.fill ? "yes" : "none") << ")"
+                << " (layer \"" << glayer << "\")";
+            if (has_uuids()) {
+                out << " (uuid " << uuid_fmt("igcirc_" + comp.refdes + "_" + std::to_string(i)) << ")";
+            }
+            out << ")\n";
+        }
+    }
+
     // Auto-generate courtyard and fab outlines from pad bounding box
     // if the footprint doesn't already have them
     if (!fp.pads.empty()) {
