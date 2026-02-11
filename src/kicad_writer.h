@@ -3,6 +3,7 @@
 #include "pcb_model.h"
 #include "model_mapper.h"
 #include <string>
+#include <set>
 #include <ostream>
 
 namespace ipc2kicad {
@@ -32,6 +33,8 @@ private:
     WriterOptions opts_;
     ModelMapper model_mapper_;
     int indent_ = 0;
+    std::string output_dir_;
+    std::set<std::string> generated_3d_models_;
 
     // Version helpers
     bool has_uuids() const { return opts_.version == KiCadVersion::V8 || opts_.version == KiCadVersion::V9; }
@@ -56,6 +59,9 @@ private:
     void write_zones(std::ostream& out, const PcbModel& model);
     void write_outline(std::ostream& out, const PcbModel& model);
     void write_graphics(std::ostream& out, const PcbModel& model);
+
+    // 3D model generation
+    std::string generate_3d_model(const Footprint& fp);
 
     // Formatting helpers
     std::string ind() const;

@@ -22,6 +22,7 @@ add_executable(ipc2581-to-kicad
     src/utils.cpp
     src/schematic_writer.cpp
     src/project_writer.cpp
+    src/vrml_writer.cpp
 )
 
 target_include_directories(ipc2581-to-kicad PRIVATE

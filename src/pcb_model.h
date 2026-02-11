@@ -55,6 +55,10 @@ struct Footprint {
     Point origin;
     // Map from pad name to pad stack definition name
     std::map<std::string, std::string> pad_to_padstack;
+
+    // 3D body data (from IPC-2581 Package element)
+    double pkg_height = 0.0;             // component height in mm
+    std::vector<Point> body_outline;     // 2D body polygon in IPC coords (Y-up, mm)
 };
 
 struct ComponentInstance {

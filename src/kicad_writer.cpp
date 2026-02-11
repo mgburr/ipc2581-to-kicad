@@ -1,4 +1,5 @@
 #include "kicad_writer.h"
+#include "vrml_writer.h"
 #include "utils.h"
 #include "geometry.h"
 
@@ -9,6 +10,7 @@
 #include <map>
 #include <algorithm>
 #include <cmath>
+#include <sys/stat.h>
 
 namespace ipc2kicad {
 
@@ -21,6 +23,11 @@ bool KicadWriter::write(const std::string& filename, const PcbModel& model) {
         std::cerr << "Error: cannot open output file: " << filename << std::endl;
         return false;
     }
+    // Extract output directory for 3D model generation
+    auto slash = filename.find_last_of("/\\");
+    output_dir_ = (slash != std::string::npos) ? filename.substr(0, slash) : ".";
+    generated_3d_models_.clear();
+
     bool ok = write(out, model);
     out.close();
     return ok;
@@ -629,6 +636,15 @@ void KicadWriter::write_footprint(std::ostream& out, const PcbModel& model,
         out << "      (scale (xyz 1 1 1))\n";
         out << "      (rotate (xyz 0 0 0))\n";
         out << "    )\n";
+    } else if (!output_dir_.empty()) {
+        std::string gen_path = generate_3d_model(fp);
+        if (!gen_path.empty()) {
+            out << "    (model \"" << gen_path << "\"\n";
+            out << "      (offset (xyz 0 0 0))\n";
+            out << "      (scale (xyz 1 1 1))\n";
+            out << "      (rotate (xyz 0 0 0))\n";
+            out << "    )\n";
+        }
     }
 
     out << "  )\n\n";
@@ -973,6 +989,43 @@ int KicadWriter::layer_id(int v78_id) const {
     // Inner copper layers: V9 uses id*2+2
     if (v78_id >= 1 && v78_id <= 30) return v78_id * 2 + 2;
     return v78_id;
+}
+
+std::string KicadWriter::generate_3d_model(const Footprint& fp) {
+    if (fp.body_outline.size() < 3 || fp.pkg_height <= 0)
+        return "";
+
+    // Sanitize filename: replace non-alphanumeric (except dash/dot/underscore) with underscore
+    std::string safe_name = fp.name;
+    for (auto& ch : safe_name) {
+        if (!std::isalnum(static_cast<unsigned char>(ch)) && ch != '-' && ch != '.' && ch != '_')
+            ch = '_';
+    }
+
+    std::string rel_path = "./3dmodels/" + safe_name + ".wrl";
+
+    // Check dedup — same footprint def already generated
+    if (generated_3d_models_.count(safe_name))
+        return rel_path;
+
+    // Create 3dmodels/ subdirectory
+    std::string models_dir = output_dir_ + "/3dmodels";
+    mkdir(models_dir.c_str(), 0755);
+
+    std::string wrl_path = models_dir + "/" + safe_name + ".wrl";
+
+    VrmlBodyParams params;
+    params.outline = fp.body_outline;
+    params.height = fp.pkg_height;
+    params.name = fp.name;
+
+    if (VrmlWriter::write_body(wrl_path, params)) {
+        generated_3d_models_.insert(safe_name);
+        log("Generated 3D body: " + rel_path);
+        return rel_path;
+    }
+
+    return "";
 }
 
 void KicadWriter::log(const std::string& msg) {

@@ -239,6 +239,15 @@ void Ipc2581Parser::build_layer_mapping(PcbModel& model) {
         } else if (func == "DRILL" || func == "DRILL_FIGURE" || func == "DRILL_DRAWING") {
             l.kicad_name = ""; // drills are handled specially
             l.type = "user";
+        } else if (func == "COURTYARD") {
+            if (side == "TOP" || side.empty()) {
+                l.kicad_name = "F.CrtYd";
+                l.kicad_id = 51;
+            } else {
+                l.kicad_name = "B.CrtYd";
+                l.kicad_id = 50;
+            }
+            l.type = "user";
         } else if (func == "DOCUMENT" || func == "DOCUMENTATION") {
             // Use layer name heuristics for DOCUMENT layers
             std::string name_upper = l.ipc_name;
@@ -261,6 +270,31 @@ void Ipc2581Parser::build_layer_mapping(PcbModel& model) {
                     l.kicad_name = "F.Fab";
                     l.kicad_id = 49;
                 }
+            } else if (name_upper.find("KEEP") != std::string::npos &&
+                       name_upper.find("OUT") != std::string::npos) {
+                // Keep-Out → Edge.Cuts (board boundary constraints)
+                l.kicad_name = "Edge.Cuts";
+                l.kicad_id = 44;
+            } else if (name_upper.find("MECHANICAL") != std::string::npos) {
+                // Mechanical layers → Dwgs.User (fabrication drawings)
+                l.kicad_name = "Dwgs.User";
+                l.kicad_id = 47;
+            } else if (name_upper.find("COURTYARD") != std::string::npos) {
+                if (name_upper.find("BOTTOM") != std::string::npos) {
+                    l.kicad_name = "B.CrtYd";
+                    l.kicad_id = 50;
+                } else {
+                    l.kicad_name = "F.CrtYd";
+                    l.kicad_id = 51;
+                }
+            } else if (name_upper.find("3D") != std::string::npos ||
+                       name_upper.find("TENTING") != std::string::npos) {
+                // 3D Body and Tenting layers → skip (not meaningful in KiCad)
+                l.kicad_name = "";
+            } else if (name_upper.find("DRILL") != std::string::npos &&
+                       name_upper.find("DRAWING") != std::string::npos) {
+                l.kicad_name = "Dwgs.User";
+                l.kicad_id = 47;
             } else {
                 l.kicad_name = "Cmts.User";
                 l.kicad_id = 46;
@@ -276,6 +310,10 @@ void Ipc2581Parser::build_layer_mapping(PcbModel& model) {
         if (!l.ipc_name.empty() && !l.kicad_name.empty()) {
             model.ipc_layer_to_kicad[l.ipc_name] = l.kicad_name;
         }
+
+        // Verbose diagnostic for layer classification
+        log("  Layer: \"" + l.ipc_name + "\" (" + func + "/" + side + ") -> " +
+            (l.kicad_name.empty() ? "(skipped)" : l.kicad_name));
     }
 
     log("Layer mapping built: " + std::to_string(copper_count) + " copper layers, " +
@@ -627,6 +665,23 @@ void Ipc2581Parser::parse_packages(const pugi::xml_node& step, PcbModel& model) 
         Footprint fp;
         fp.name = name;
 
+        // Parse package height
+        double pkg_h = parse_double(pkg.attribute("height").as_string());
+        fp.pkg_height = to_mm(pkg_h);
+
+        // Parse body outline polygon (keep in IPC Y-up coords for VRML)
+        auto outline_node = pkg.child("Outline");
+        if (outline_node) {
+            auto poly = outline_node.child("Polygon");
+            if (!poly) poly = outline_node.child("Polyline");
+            if (poly) {
+                auto raw_pts = parse_polygon(poly);
+                for (auto& pt : raw_pts) {
+                    fp.body_outline.push_back(to_mm(pt));
+                }
+            }
+        }
+
         // Parse pads/pins
         int pad_num = 1;
         for (auto child : pkg.children()) {
@@ -713,7 +768,8 @@ void Ipc2581Parser::parse_packages(const pugi::xml_node& step, PcbModel& model) 
                 }
                 pad_num++;
             } else if (tag == "SilkScreen" || tag == "Outline" || tag == "Courtyard" ||
-                       tag == "AssemblyDrawing") {
+                       tag == "AssemblyDrawing" || tag == "OtherMarkingsPrimitives" ||
+                       tag == "PickAndPlaceBody" || tag == "Marking") {
                 // Parse graphic features within the package
                 for (auto feat : child.children()) {
                     std::string ftag = feat.name();
@@ -723,6 +779,15 @@ void Ipc2581Parser::parse_packages(const pugi::xml_node& step, PcbModel& model) 
                     if (tag == "SilkScreen") layer = "F.SilkS";
                     else if (tag == "Courtyard") layer = "F.CrtYd";
                     else if (tag == "AssemblyDrawing") layer = "F.Fab";
+                    else if (tag == "OtherMarkingsPrimitives") layer = "Cmts.User";
+                    else if (tag == "PickAndPlaceBody") layer = "F.CrtYd";
+                    else if (tag == "Marking") {
+                        std::string usage = child.attribute("markingUsage").as_string();
+                        if (usage == "SILKSCREEN") layer = "F.SilkS";
+                        else if (usage == "ASSEMBLY") layer = "F.Fab";
+                        else if (usage == "COURTYARD") layer = "F.CrtYd";
+                        else layer = "Cmts.User";
+                    }
                     else layer = "F.Fab";
 
                     if (ftag == "Line") {
