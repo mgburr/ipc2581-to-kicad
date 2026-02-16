@@ -1,4 +1,7 @@
 #include "ipc2581_parser.h"
+#include "gerber_parser.h"
+#include "drill_parser.h"
+#include "netlist_parser.h"
 #include "kicad_writer.h"
 #include "schematic_writer.h"
 #include "project_writer.h"
@@ -22,18 +25,25 @@
 #include <unistd.h>
 #include <libgen.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #endif
 
 static void print_help() {
     std::cout << "Usage: ipc2581-to-kicad [options] <input>\n"
               << "\n"
-              << "Convert IPC-2581 or ODB++ files to KiCad .kicad_pcb format.\n"
+              << "Convert IPC-2581, ODB++, or Gerber files to KiCad .kicad_pcb format.\n"
               << "\n"
               << "Supported input formats:\n"
               << "  .xml, .cvg          IPC-2581 XML files\n"
               << "  .tgz, .tar.gz, .zip ODB++ archives (requires Python 3)\n"
-              << "  directory/          ODB++ extracted directory (requires Python 3)\n"
+              << "  directory/          ODB++ or Gerber directory\n"
               << "  .json               JSON (with --import-json)\n"
+              << "\n"
+              << "Gerber import options:\n"
+              << "  --gerber-dir <path>       Import Gerber files from directory\n"
+              << "  --gerber <file>           Add individual Gerber file (repeatable)\n"
+              << "  --drill <file>            Add Excellon drill file (repeatable)\n"
+              << "  --netlist <file>          Import IPC-D-356 netlist file\n"
               << "\n"
               << "Options:\n"
               << "  -o, --output <file>       Output .kicad_pcb file (default: <input>.kicad_pcb)\n"
@@ -46,6 +56,7 @@ static void print_help() {
               << "  --schematic               Also generate .kicad_sch and .kicad_pro files\n"
               << "  --use-kicad-symbols       Use standard KiCad library symbols (R, C, etc.) in schematic\n"
               << "  --kicad-symbol-dir DIR    Path to KiCad symbol libraries (auto-detected if omitted)\n"
+              << "  --layer-map \"IPC=KiCad\"    Override layer mapping (repeatable)\n"
               << "  --verbose                 Verbose output during conversion\n"
               << "  -h, --help                Show help\n";
 }
@@ -63,7 +74,7 @@ static std::string replace_extension(const std::string& path, const std::string&
 }
 
 // Detect input format from file path
-enum class InputFormat { IPC2581, ODB, JSON, UNKNOWN };
+enum class InputFormat { IPC2581, ODB, JSON, GERBER, UNKNOWN };
 
 static bool is_directory(const std::string& path) {
     struct stat st;
@@ -77,15 +88,43 @@ static bool has_odb_matrix(const std::string& dir_path) {
     return stat(matrix_path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
 }
 
-static InputFormat detect_format(const std::string& path, bool import_json) {
-    if (import_json) return InputFormat::JSON;
+static bool has_gerber_files(const std::string& dir_path) {
+    // Check if directory contains common Gerber file extensions
+#ifndef _WIN32
+    DIR* d = opendir(dir_path.c_str());
+    if (!d) return false;
+    struct dirent* entry;
+    while ((entry = readdir(d)) != nullptr) {
+        std::string name = entry->d_name;
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        auto dot = lower.rfind('.');
+        if (dot != std::string::npos) {
+            std::string ext = lower.substr(dot);
+            if (ext == ".gbr" || ext == ".ger" || ext == ".gtl" || ext == ".gbl" ||
+                ext == ".gts" || ext == ".gbs" || ext == ".gto" || ext == ".gbo" ||
+                ext == ".drl" || ext == ".art" || ext == ".pho") {
+                closedir(d);
+                return true;
+            }
+        }
+    }
+    closedir(d);
+#endif
+    return false;
+}
 
-    // Check if it's a directory with ODB++ structure
+static InputFormat detect_format(const std::string& path, bool import_json,
+                                  bool has_gerber_args = false) {
+    if (import_json) return InputFormat::JSON;
+    if (has_gerber_args) return InputFormat::GERBER;
+
+    // Check if it's a directory
     if (is_directory(path)) {
         if (has_odb_matrix(path)) return InputFormat::ODB;
-        // Also check one level down
-        // (ODB++ archives sometimes have a subdirectory)
-        return InputFormat::ODB; // Assume ODB++ if it's a directory
+        if (has_gerber_files(path)) return InputFormat::GERBER;
+        // Fallback: assume ODB++ if it's a directory without Gerber files
+        return InputFormat::ODB;
     }
 
     // Check file extension
@@ -104,6 +143,16 @@ static InputFormat detect_format(const std::string& path, bool import_json) {
         return InputFormat::IPC2581;
     if (lower_path.size() >= 4 && lower_path.substr(lower_path.size() - 4) == ".cvg")
         return InputFormat::IPC2581;
+
+    // Gerber file extensions
+    auto dot = lower_path.rfind('.');
+    if (dot != std::string::npos) {
+        std::string ext = lower_path.substr(dot);
+        if (ext == ".gbr" || ext == ".ger" || ext == ".gtl" || ext == ".gbl" ||
+            ext == ".gts" || ext == ".gbs" || ext == ".gto" || ext == ".gbo" ||
+            ext == ".gtp" || ext == ".gbp" || ext == ".gko" || ext == ".drl")
+            return InputFormat::GERBER;
+    }
 
     return InputFormat::UNKNOWN;
 }
@@ -301,6 +350,13 @@ int main(int argc, char* argv[]) {
     bool gen_schematic = false;
     bool use_kicad_symbols = false;
     std::string kicad_symbol_dir;
+    std::vector<std::pair<std::string,std::string>> layer_overrides;
+
+    // Gerber import options
+    std::string gerber_dir;
+    std::vector<std::string> gerber_files;
+    std::vector<std::string> drill_files;
+    std::string netlist_file;
 
     // Parse arguments
     for (int i = 1; i < argc; i++) {
@@ -350,6 +406,42 @@ int main(int argc, char* argv[]) {
             }
             kicad_symbol_dir = argv[++i];
             use_kicad_symbols = true; // implied
+        } else if (arg == "--layer-map") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --layer-map requires an argument (\"IPC Name=KiCad Name\")\n";
+                return 1;
+            }
+            std::string mapping = argv[++i];
+            auto eq = mapping.find('=');
+            if (eq == std::string::npos) {
+                std::cerr << "Error: --layer-map value must contain '=': \"" << mapping << "\"\n";
+                return 1;
+            }
+            layer_overrides.emplace_back(mapping.substr(0, eq), mapping.substr(eq + 1));
+        } else if (arg == "--gerber-dir") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --gerber-dir requires an argument\n";
+                return 1;
+            }
+            gerber_dir = argv[++i];
+        } else if (arg == "--gerber") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --gerber requires an argument\n";
+                return 1;
+            }
+            gerber_files.push_back(argv[++i]);
+        } else if (arg == "--drill") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --drill requires an argument\n";
+                return 1;
+            }
+            drill_files.push_back(argv[++i]);
+        } else if (arg == "--netlist") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --netlist requires an argument\n";
+                return 1;
+            }
+            netlist_file = argv[++i];
         } else if (arg == "--verbose") {
             verbose = true;
         } else if (arg[0] == '-') {
@@ -361,22 +453,47 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (input_file.empty()) {
+    // Handle Gerber args: --gerber-dir or --gerber implies Gerber mode
+    bool has_gerber_args = !gerber_dir.empty() || !gerber_files.empty() ||
+                           !drill_files.empty() || !netlist_file.empty();
+
+    if (input_file.empty() && !has_gerber_args) {
         std::cerr << "Error: no input file specified\n";
         print_help();
         return 1;
     }
 
+    // For Gerber mode, use gerber_dir or first gerber file as basis for output name
+    if (input_file.empty() && has_gerber_args) {
+        if (!gerber_dir.empty())
+            input_file = gerber_dir;
+        else if (!gerber_files.empty())
+            input_file = gerber_files[0];
+        else if (!drill_files.empty())
+            input_file = drill_files[0];
+    }
+
     if (output_file.empty()) {
-        output_file = replace_extension(input_file, ".kicad_pcb");
+        if (!gerber_dir.empty()) {
+            // Use directory name as output base
+            std::string dir = gerber_dir;
+            // Remove trailing slash
+            while (!dir.empty() && (dir.back() == '/' || dir.back() == '\\'))
+                dir.pop_back();
+            auto slash = dir.find_last_of("/\\");
+            std::string basename = (slash != std::string::npos) ? dir.substr(slash + 1) : dir;
+            output_file = gerber_dir + "/" + basename + ".kicad_pcb";
+        } else {
+            output_file = replace_extension(input_file, ".kicad_pcb");
+        }
     }
 
     // Detect input format
-    InputFormat format = detect_format(input_file, import_json);
+    InputFormat format = detect_format(input_file, import_json, has_gerber_args);
 
     if (format == InputFormat::UNKNOWN) {
         std::cerr << "Error: cannot determine input format for '" << input_file << "'\n";
-        std::cerr << "  Supported: .xml, .cvg (IPC-2581), .tgz, .tar.gz, .zip (ODB++), .json\n";
+        std::cerr << "  Supported: .xml, .cvg (IPC-2581), .tgz, .tar.gz, .zip (ODB++), .json, Gerber\n";
         return 1;
     }
 
@@ -447,20 +564,164 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: failed to parse JSON from " << input_file << "\n";
             return 1;
         }
+
+    } else if (format == InputFormat::GERBER) {
+        // ── Gerber/Drill/Netlist import path ────────────────────────
+        if (verbose) {
+            std::cerr << "Detected Gerber input format\n";
+        }
+
+        ipc2kicad::GerberParser gparser(verbose);
+        ipc2kicad::GerberSet gset;
+
+        if (!gerber_dir.empty()) {
+            gset = gparser.scan_directory(gerber_dir);
+        } else if (!gerber_files.empty()) {
+            gset = gparser.scan_files(gerber_files);
+        } else if (is_directory(input_file)) {
+            gset = gparser.scan_directory(input_file);
+        } else {
+            // Single file
+            gset = gparser.scan_files({input_file});
+        }
+
+        // Add explicit drill files
+        for (auto& d : drill_files) {
+            ipc2kicad::GerberFileInfo dfi;
+            dfi.filepath = d;
+            // Extract basename
+            auto sl = d.find_last_of("/\\");
+            dfi.filename = (sl != std::string::npos) ? d.substr(sl + 1) : d;
+            dfi.file_type = ipc2kicad::GerberFileInfo::DRILL;
+            dfi.detected_layer = "(drill)";
+            dfi.assigned_layer = "(drill)";
+            gset.files.push_back(dfi);
+        }
+
+        // Add explicit netlist file
+        if (!netlist_file.empty()) {
+            ipc2kicad::GerberFileInfo nfi;
+            nfi.filepath = netlist_file;
+            auto sl = netlist_file.find_last_of("/\\");
+            nfi.filename = (sl != std::string::npos) ? netlist_file.substr(sl + 1) : netlist_file;
+            nfi.file_type = ipc2kicad::GerberFileInfo::NETLIST;
+            nfi.detected_layer = "(netlist)";
+            nfi.assigned_layer = "(netlist)";
+            gset.files.push_back(nfi);
+        }
+
+        // Handle --list-layers
+        if (list_layers) {
+            if (export_json) {
+                auto escape = [](const std::string& s) {
+                    std::string out;
+                    for (char c : s) {
+                        if (c == '"') out += "\\\"";
+                        else if (c == '\\') out += "\\\\";
+                        else out += c;
+                    }
+                    return out;
+                };
+                std::cout << "[\n";
+                for (size_t i = 0; i < gset.files.size(); i++) {
+                    auto& fi = gset.files[i];
+                    std::string func = "Gerber";
+                    std::string side = "";
+                    if (fi.file_type == ipc2kicad::GerberFileInfo::DRILL) func = "Drill";
+                    else if (fi.file_type == ipc2kicad::GerberFileInfo::NETLIST) func = "Netlist";
+
+                    // Determine side from detected layer
+                    std::string layer = fi.detected_layer;
+                    if (layer.find("F.") != std::string::npos) side = "TOP";
+                    else if (layer.find("B.") != std::string::npos) side = "BOTTOM";
+                    else if (layer.find("In") != std::string::npos) side = "INTERNAL";
+                    else if (layer == "(drill)") side = "ALL";
+
+                    std::cout << "  {\"ipc_name\": \"" << escape(fi.filename)
+                              << "\", \"ipc_function\": \"" << escape(func)
+                              << "\", \"ipc_side\": \"" << escape(side)
+                              << "\", \"kicad_name\": \"" << escape(fi.detected_layer) << "\"}";
+                    if (i + 1 < gset.files.size()) std::cout << ",";
+                    std::cout << "\n";
+                }
+                std::cout << "]\n";
+            } else {
+                std::cout << "Gerber file layer mapping:\n";
+                std::cout << "  " << std::string(60, '-') << "\n";
+                for (auto& fi : gset.files) {
+                    std::string type = "Gerber";
+                    if (fi.file_type == ipc2kicad::GerberFileInfo::DRILL) type = "Drill";
+                    else if (fi.file_type == ipc2kicad::GerberFileInfo::NETLIST) type = "Netlist";
+                    std::cout << "  " << fi.filename << " (" << type << ") -> "
+                              << fi.detected_layer << "\n";
+                }
+            }
+            return 0;
+        }
+
+        // Apply layer overrides (filename=KiCadLayer)
+        for (auto& [ipc_name, kicad_name] : layer_overrides) {
+            for (auto& fi : gset.files) {
+                if (fi.filename == ipc_name) {
+                    fi.assigned_layer = kicad_name;
+                    if (verbose) {
+                        std::cerr << "Layer override: " << fi.filename
+                                  << " -> " << kicad_name << "\n";
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Parse all files into model
+        if (!gparser.parse(gset, model)) {
+            std::cerr << "Error: failed to parse Gerber files\n";
+            return 1;
+        }
     }
 
     // Handle --list-layers
     if (list_layers) {
-        std::cout << "Layer mapping:\n";
-        std::cout << "  " << std::string(40, '-') << "\n";
-        for (auto& l : model.layers) {
-            std::cout << "  " << l.ipc_name;
-            if (!l.ipc_function.empty()) {
-                std::cout << " (" << l.ipc_function << ")";
+        if (export_json) {
+            // JSON output for GUI consumption
+            std::cout << "[\n";
+            for (size_t i = 0; i < model.layers.size(); i++) {
+                auto& l = model.layers[i];
+                // Escape any quotes in names
+                auto escape = [](const std::string& s) {
+                    std::string out;
+                    for (char c : s) {
+                        if (c == '"') out += "\\\"";
+                        else if (c == '\\') out += "\\\\";
+                        else out += c;
+                    }
+                    return out;
+                };
+                std::cout << "  {\"ipc_name\": \"" << escape(l.ipc_name)
+                          << "\", \"ipc_function\": \"" << escape(l.ipc_function)
+                          << "\", \"ipc_side\": \"" << escape(l.ipc_side)
+                          << "\", \"kicad_name\": \"" << escape(l.kicad_name) << "\"}";
+                if (i + 1 < model.layers.size()) std::cout << ",";
+                std::cout << "\n";
             }
-            std::cout << " -> " << (l.kicad_name.empty() ? "(unmapped)" : l.kicad_name) << "\n";
+            std::cout << "]\n";
+        } else {
+            std::cout << "Layer mapping:\n";
+            std::cout << "  " << std::string(40, '-') << "\n";
+            for (auto& l : model.layers) {
+                std::cout << "  " << l.ipc_name;
+                if (!l.ipc_function.empty()) {
+                    std::cout << " (" << l.ipc_function << ")";
+                }
+                std::cout << " -> " << (l.kicad_name.empty() ? "(unmapped)" : l.kicad_name) << "\n";
+            }
         }
         return 0;
+    }
+
+    // Apply layer mapping overrides (skip for Gerber — already handled in dispatch)
+    if (!layer_overrides.empty() && format != InputFormat::GERBER) {
+        ipc2kicad::apply_layer_overrides(model, layer_overrides, verbose);
     }
 
     // Handle --export-json

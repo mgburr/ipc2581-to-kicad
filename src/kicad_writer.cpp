@@ -678,6 +678,9 @@ void KicadWriter::write_pad(std::ostream& out, const PadDef& pad,
     // KiCad treats pad rotation as absolute board-level rotation, NOT relative
     // to the footprint. We must add the component rotation so pad shapes are
     // oriented correctly on the board.
+    // Note: pad.rotation comes from the Package Pin (mask shape), which is 0
+    // for most pads. The mask shape dimensions already encode the orientation
+    // relative to the component, so we just add comp.rotation.
     double pad_rotation = std::fmod(pad.rotation + comp.rotation, 360.0);
     if (pad_rotation < 0) pad_rotation += 360.0;
     if (std::abs(pad_rotation) < 0.001 || std::abs(pad_rotation - 360.0) < 0.001)

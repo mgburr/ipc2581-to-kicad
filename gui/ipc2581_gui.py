@@ -4,6 +4,7 @@ IPC-2581 to KiCad Converter - GUI
 A graphical interface for the ipc2581-to-kicad command-line tool.
 """
 
+import json
 import os
 import sys
 import subprocess
@@ -23,9 +24,9 @@ from pcb_viewer_3d import PcbViewer3D
 class Ipc2581ConverterGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("IPC-2581 / ODB++ to KiCad Converter")
-        self.root.geometry("700x600")
-        self.root.minsize(600, 500)
+        self.root.title("IPC-2581 / ODB++ / Gerber to KiCad Converter")
+        self.root.geometry("700x750")
+        self.root.minsize(600, 600)
 
         # Find the converter executable
         self.converter_path = self._find_converter()
@@ -37,6 +38,8 @@ class Ipc2581ConverterGUI:
         self.selected_step = tk.StringVar()
         self.verbose = tk.BooleanVar(value=True)
         self.available_steps = []
+        self.layer_data = []       # list of dicts from --list-layers --export-json
+        self.layer_combos = []     # list of (ipc_name, auto_kicad_name, combobox) tuples
 
         # Build UI
         self._create_widgets()
@@ -96,7 +99,9 @@ class Ipc2581ConverterGUI:
         self.input_entry.grid(row=0, column=0, sticky="ew", padx=(0, 5))
 
         ttk.Button(input_frame, text="Browse...", command=self._browse_input).grid(
-            row=0, column=1)
+            row=0, column=1, padx=(0, 5))
+        ttk.Button(input_frame, text="Import Folder...",
+                   command=self._browse_gerber_folder).grid(row=0, column=2)
         row += 1
 
         # === Output File Section ===
@@ -148,6 +153,66 @@ class Ipc2581ConverterGUI:
         # Verbose
         ttk.Checkbutton(options_frame, text="Verbose output",
                         variable=self.verbose).grid(row=2, column=0, columnspan=2, sticky="w", pady=2)
+
+        # === Layer Mapping Section ===
+        self.layer_frame = ttk.LabelFrame(main_frame, text="Layer Mapping", padding="5")
+        self.layer_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+        self.layer_frame.columnconfigure(0, weight=1)
+        row += 1
+
+        # Header row
+        layer_header = ttk.Frame(self.layer_frame)
+        layer_header.grid(row=0, column=0, sticky="ew")
+        layer_header.columnconfigure(0, weight=1)
+        layer_header.columnconfigure(1, weight=0)
+        layer_header.columnconfigure(2, weight=1)
+        ttk.Label(layer_header, text="IPC Layer", font=("", 9, "bold")).grid(
+            row=0, column=0, sticky="w", padx=5)
+        ttk.Label(layer_header, text="Function", font=("", 9, "bold")).grid(
+            row=0, column=1, sticky="w", padx=5)
+        ttk.Label(layer_header, text="KiCad Layer", font=("", 9, "bold")).grid(
+            row=0, column=2, sticky="w", padx=5)
+
+        # Scrollable layer table
+        layer_canvas = tk.Canvas(self.layer_frame, height=130, highlightthickness=0)
+        layer_scrollbar = ttk.Scrollbar(self.layer_frame, orient="vertical",
+                                         command=layer_canvas.yview)
+        self.layer_table_frame = ttk.Frame(layer_canvas)
+        self.layer_table_frame.columnconfigure(0, weight=1)
+        self.layer_table_frame.columnconfigure(1, weight=0)
+        self.layer_table_frame.columnconfigure(2, weight=1)
+
+        self.layer_table_frame.bind(
+            "<Configure>",
+            lambda e: layer_canvas.configure(scrollregion=layer_canvas.bbox("all")))
+        layer_canvas.create_window((0, 0), window=self.layer_table_frame, anchor="nw")
+        layer_canvas.configure(yscrollcommand=layer_scrollbar.set)
+
+        layer_canvas.grid(row=1, column=0, sticky="ew")
+        layer_scrollbar.grid(row=1, column=1, sticky="ns")
+
+        # Bind mousewheel scrolling on the canvas
+        def _on_mousewheel(event):
+            layer_canvas.yview_scroll(-1 * (event.delta // 120 or (
+                -1 if event.num == 5 else 1)), "units")
+        layer_canvas.bind("<MouseWheel>", _on_mousewheel)  # Windows/macOS
+        layer_canvas.bind("<Button-4>", _on_mousewheel)    # Linux scroll up
+        layer_canvas.bind("<Button-5>", _on_mousewheel)    # Linux scroll down
+        self._layer_canvas = layer_canvas
+
+        # Placeholder label
+        self.layer_placeholder = ttk.Label(self.layer_table_frame,
+                                            text="(load a file to see layer mapping)",
+                                            foreground="gray")
+        self.layer_placeholder.grid(row=0, column=0, columnspan=3, pady=10)
+
+        # Reset button
+        layer_btn_frame = ttk.Frame(self.layer_frame)
+        layer_btn_frame.grid(row=2, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        self.layer_reset_btn = ttk.Button(layer_btn_frame, text="Reset to Auto",
+                                           command=self._reset_layer_mapping,
+                                           state="disabled")
+        self.layer_reset_btn.pack(side="left", padx=5)
 
         # === Action Buttons ===
         button_frame = ttk.Frame(main_frame)
@@ -209,11 +274,12 @@ class Ipc2581ConverterGUI:
     def _browse_input(self):
         """Open file dialog for input file selection."""
         filename = filedialog.askopenfilename(
-            title="Select IPC-2581 or ODB++ File",
+            title="Select Input File",
             filetypes=[
-                ("All supported", "*.xml *.cvg *.tgz *.zip"),
+                ("All supported", "*.xml *.cvg *.tgz *.zip *.gbr *.ger *.gtl *.gbl"),
                 ("IPC-2581 files", "*.xml *.cvg"),
                 ("ODB++ archives", "*.tgz *.zip"),
+                ("Gerber files", "*.gbr *.ger *.gtl *.gbl *.gts *.gbs *.gto *.gbo"),
                 ("All files", "*.*")
             ]
         )
@@ -222,8 +288,139 @@ class Ipc2581ConverterGUI:
             # Auto-set output filename
             base = os.path.splitext(filename)[0]
             self.output_file.set(base + ".kicad_pcb")
-            # Auto-load steps
+            # Auto-load steps and layers
             self._load_steps()
+            self._load_layer_mapping()
+
+    def _browse_gerber_folder(self):
+        """Open folder dialog for Gerber directory import."""
+        folder = filedialog.askdirectory(title="Select Gerber Folder")
+        if folder:
+            self.input_file.set(folder)
+            # Auto-set output filename from directory name
+            dirname = os.path.basename(folder.rstrip("/\\"))
+            self.output_file.set(os.path.join(folder, dirname + ".kicad_pcb"))
+            # Load steps (will find none, that's fine)
+            self._load_steps()
+            # Load layer mapping using --gerber-dir
+            self._load_layer_mapping()
+
+    def _is_gerber_dir_mode(self):
+        """Check if current input is a directory (Gerber folder mode)."""
+        input_path = self.input_file.get()
+        return input_path and os.path.isdir(input_path)
+
+    def _load_layer_mapping(self):
+        """Load layer mapping from the input file via --list-layers --export-json."""
+        if not self.converter_path:
+            return
+
+        input_path = self.input_file.get()
+        if not input_path or not os.path.exists(input_path):
+            return
+
+        self._set_status("Loading layer mapping...")
+
+        def run():
+            try:
+                cmd = [self.converter_path, "--list-layers", "--export-json"]
+                if os.path.isdir(input_path):
+                    cmd.extend(["--gerber-dir", input_path])
+                else:
+                    cmd.append(input_path)
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                self.root.after(0, lambda: self._process_layer_mapping(result))
+            except Exception as e:
+                self.root.after(0, lambda: self._log(f"Layer mapping error: {e}", "error"))
+                self.root.after(0, lambda: self._set_status("Ready"))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _process_layer_mapping(self, result):
+        """Process the JSON layer mapping output and populate the table."""
+        self._set_status("Ready")
+
+        if result.returncode != 0:
+            self._log(f"Error loading layers: {result.stderr}", "error")
+            return
+
+        try:
+            self.layer_data = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            self._log(f"Error parsing layer JSON: {e}", "error")
+            return
+
+        # KiCad layer choices for comboboxes
+        kicad_layers = [
+            "(unmapped)",
+            "F.Cu", "B.Cu",
+            "In1.Cu", "In2.Cu", "In3.Cu", "In4.Cu", "In5.Cu", "In6.Cu",
+            "In7.Cu", "In8.Cu", "In9.Cu", "In10.Cu",
+            "F.Mask", "B.Mask",
+            "F.Paste", "B.Paste",
+            "F.SilkS", "B.SilkS",
+            "F.Fab", "B.Fab",
+            "F.CrtYd", "B.CrtYd",
+            "Edge.Cuts",
+            "Dwgs.User", "Cmts.User",
+            "Eco1.User", "Eco2.User",
+            "Margin",
+        ]
+
+        # Clear existing table
+        for w in self.layer_table_frame.winfo_children():
+            w.destroy()
+        self.layer_combos = []
+
+        for i, layer in enumerate(self.layer_data):
+            ipc_name = layer.get("ipc_name", "")
+            ipc_func = layer.get("ipc_function", "")
+            auto_kicad = layer.get("kicad_name", "")
+            display_kicad = auto_kicad if auto_kicad else "(unmapped)"
+
+            ttk.Label(self.layer_table_frame, text=ipc_name).grid(
+                row=i, column=0, sticky="w", padx=5, pady=1)
+            ttk.Label(self.layer_table_frame, text=ipc_func,
+                      foreground="gray").grid(
+                row=i, column=1, sticky="w", padx=5, pady=1)
+
+            combo = ttk.Combobox(self.layer_table_frame, values=kicad_layers,
+                                  width=14, state="readonly")
+            combo.set(display_kicad)
+            combo.grid(row=i, column=2, sticky="w", padx=5, pady=1)
+
+            self.layer_combos.append((ipc_name, auto_kicad, combo))
+
+        self.layer_reset_btn.state(['!disabled'])
+        self._log(f"Layer mapping loaded: {len(self.layer_data)} layers", "success")
+
+        # Update scroll region
+        self.layer_table_frame.update_idletasks()
+        self._layer_canvas.configure(
+            scrollregion=self._layer_canvas.bbox("all"))
+
+    def _reset_layer_mapping(self):
+        """Reset all layer comboboxes to auto-detected values."""
+        for ipc_name, auto_kicad, combo in self.layer_combos:
+            combo.set(auto_kicad if auto_kicad else "(unmapped)")
+        self._log("Layer mapping reset to auto-detected values", "info")
+
+    def _get_layer_overrides(self):
+        """Return list of (ipc_name, kicad_name) for any user-modified layers."""
+        overrides = []
+        for ipc_name, auto_kicad, combo in self.layer_combos:
+            current = combo.get()
+            auto_display = auto_kicad if auto_kicad else "(unmapped)"
+            if current != auto_display:
+                # Convert "(unmapped)" to empty string for CLI
+                kicad = "" if current == "(unmapped)" else current
+                overrides.append((ipc_name, kicad))
+        return overrides
 
     def _browse_output(self):
         """Open file dialog for output file selection."""
@@ -358,7 +555,17 @@ class Ipc2581ConverterGUI:
         if step and step not in ["(first step - default)", "(auto-detect from file)", "(no steps found)"]:
             cmd.extend(["-s", step])
 
-        cmd.extend(["-o", output_path, input_path])
+        # Add layer mapping overrides
+        for ipc_name, kicad_name in self._get_layer_overrides():
+            cmd.extend(["--layer-map", f"{ipc_name}={kicad_name}"])
+
+        cmd.extend(["-o", output_path])
+
+        # Use --gerber-dir for directory input, else normal positional arg
+        if os.path.isdir(input_path):
+            cmd.extend(["--gerber-dir", input_path])
+        else:
+            cmd.append(input_path)
 
         self._log(f"Running: {' '.join(cmd)}", "info")
         self._log("-" * 60)
@@ -544,13 +751,21 @@ def main():
     app = Ipc2581ConverterGUI(root)
 
     def open_file(input_path):
-        """Load a file into the GUI input field."""
+        """Load a file or directory into the GUI input field."""
         if os.path.isfile(input_path):
             app.input_file.set(input_path)
             base = os.path.splitext(input_path)[0]
             app.output_file.set(base + ".kicad_pcb")
             app._log(f"Opened: {input_path}", "info")
             root.after(500, app._load_steps)
+            root.after(600, app._load_layer_mapping)
+        elif os.path.isdir(input_path):
+            app.input_file.set(input_path)
+            dirname = os.path.basename(input_path.rstrip("/\\"))
+            app.output_file.set(os.path.join(input_path, dirname + ".kicad_pcb"))
+            app._log(f"Opened folder: {input_path}", "info")
+            root.after(500, app._load_steps)
+            root.after(600, app._load_layer_mapping)
 
     # Handle macOS "Open With" / drag-and-drop via Tk Apple Event handler.
     # When Finder opens a file with this app, macOS sends an odoc Apple Event

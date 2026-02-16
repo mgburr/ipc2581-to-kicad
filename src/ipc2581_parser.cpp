@@ -97,6 +97,7 @@ bool Ipc2581Parser::parse(const std::string& filename, PcbModel& model) {
     parse_padstack_vias(step, model);
     parse_layer_features(step, model);
     attach_graphics_to_components(model);
+    remove_outline_duplicates(model);
 
     log("Parse complete: " + std::to_string(model.components.size()) + " components, " +
         std::to_string(model.traces.size()) + " traces, " +
@@ -318,6 +319,79 @@ void Ipc2581Parser::build_layer_mapping(PcbModel& model) {
 
     log("Layer mapping built: " + std::to_string(copper_count) + " copper layers, " +
         std::to_string(model.ipc_layer_to_kicad.size()) + " total mapped");
+}
+
+// --- Layer Override ---
+
+// Map KiCad layer name to its numeric ID
+int kicad_layer_name_to_id(const std::string& name) {
+    if (name == "F.Cu") return 0;
+    if (name == "B.Cu") return 31;
+    if (name == "F.Mask") return 39;
+    if (name == "B.Mask") return 38;
+    if (name == "F.Paste") return 37;
+    if (name == "B.Paste") return 36;
+    if (name == "F.SilkS") return 37;
+    if (name == "B.SilkS") return 36;
+    if (name == "F.Fab") return 49;
+    if (name == "B.Fab") return 48;
+    if (name == "F.CrtYd") return 51;
+    if (name == "B.CrtYd") return 50;
+    if (name == "Edge.Cuts") return 44;
+    if (name == "Dwgs.User") return 47;
+    if (name == "Cmts.User") return 46;
+    if (name == "Eco1.User") return 52;
+    if (name == "Eco2.User") return 53;
+    if (name == "Margin") return 45;
+    // Inner copper layers: In1.Cu..In30.Cu
+    if (name.size() > 4 && name.substr(0, 2) == "In" && name.substr(name.size() - 3) == ".Cu") {
+        try {
+            int n = std::stoi(name.substr(2, name.size() - 5));
+            if (n >= 1 && n <= 30) return n;
+        } catch (...) {}
+    }
+    return -1;
+}
+
+void apply_layer_overrides(PcbModel& model,
+                           const std::vector<std::pair<std::string,std::string>>& overrides,
+                           bool verbose) {
+    for (auto& [ipc_name, kicad_name] : overrides) {
+        bool found = false;
+        for (auto& l : model.layers) {
+            if (l.ipc_name == ipc_name) {
+                found = true;
+                std::string old_name = l.kicad_name;
+
+                if (kicad_name.empty() || kicad_name == "(unmapped)") {
+                    // Unmap the layer
+                    l.kicad_name = "";
+                    l.kicad_id = -1;
+                    model.ipc_layer_to_kicad.erase(ipc_name);
+                } else {
+                    int id = kicad_layer_name_to_id(kicad_name);
+                    if (id < 0) {
+                        std::cerr << "Warning: unknown KiCad layer '" << kicad_name
+                                  << "' in --layer-map override for '" << ipc_name << "'\n";
+                        continue;
+                    }
+                    l.kicad_name = kicad_name;
+                    l.kicad_id = id;
+                    model.ipc_layer_to_kicad[ipc_name] = kicad_name;
+                }
+
+                if (verbose) {
+                    std::cerr << "Layer override: \"" << ipc_name << "\" "
+                              << (old_name.empty() ? "(unmapped)" : old_name)
+                              << " -> " << (kicad_name.empty() ? "(unmapped)" : kicad_name) << "\n";
+                }
+                break;
+            }
+        }
+        if (!found) {
+            std::cerr << "Warning: --layer-map: IPC layer '" << ipc_name << "' not found\n";
+        }
+    }
 }
 
 // --- Stackup Parsing ---
@@ -544,11 +618,10 @@ void Ipc2581Parser::parse_profile(const pugi::xml_node& step, PcbModel& model) {
         return;
     }
 
-    // Profile can contain Polygon, Polyline, or Circle
+    // Profile can contain Polygon, Polyline, or Circle for the outer boundary
     auto polygon = profile.child("Polygon");
     if (polygon) {
         parse_contour(polygon, model.outline, model.outline_arcs);
-        // Set layer to Edge.Cuts
         for (auto& seg : model.outline) seg.layer = "Edge.Cuts";
         for (auto& arc : model.outline_arcs) arc.layer = "Edge.Cuts";
     }
@@ -583,8 +656,20 @@ void Ipc2581Parser::parse_profile(const pugi::xml_node& step, PcbModel& model) {
         model.outline_arcs.push_back(a4);
     }
 
+    // Board cutouts: <Cutout> elements are siblings to the main Polygon/Polyline
+    // within <Profile>. Each defines an internal hole in the board.
+    int cutout_count = 0;
+    for (auto cutout : profile.children("Cutout")) {
+        parse_contour(cutout, model.outline, model.outline_arcs);
+        // Set layer on newly added segments/arcs
+        for (auto& seg : model.outline) seg.layer = "Edge.Cuts";
+        for (auto& arc : model.outline_arcs) arc.layer = "Edge.Cuts";
+        cutout_count++;
+    }
+
     log("Board outline: " + std::to_string(model.outline.size()) + " segments, " +
-        std::to_string(model.outline_arcs.size()) + " arcs");
+        std::to_string(model.outline_arcs.size()) + " arcs" +
+        (cutout_count > 0 ? ", " + std::to_string(cutout_count) + " cutouts" : ""));
 }
 
 void Ipc2581Parser::parse_contour(const pugi::xml_node& contour,
@@ -1435,6 +1520,13 @@ void Ipc2581Parser::parse_layer_features(const pugi::xml_node& step, PcbModel& m
             continue;
         }
 
+        // Skip Edge.Cuts layer features when Profile already defined the board
+        // outline. Keep-Out layers often duplicate the Profile geometry and add
+        // constraint shapes that aren't actual board edges.
+        if (kicad_layer == "Edge.Cuts" && !model.outline.empty()) {
+            continue;
+        }
+
         for (auto set_node : lf.children("Set")) {
             std::string net_name = set_node.attribute("net").as_string();
             int net_id = model.get_net_id(net_name);
@@ -1701,6 +1793,43 @@ void Ipc2581Parser::attach_graphics_to_components(PcbModel& model) {
         return true;
     };
 
+    // Compute the bounding span of a graphic item (max dimension)
+    auto graphic_span = [](const GraphicItem& gi) -> double {
+        if (gi.kind == GraphicItem::LINE) {
+            double dx = gi.end.x - gi.start.x;
+            double dy = gi.end.y - gi.start.y;
+            return std::sqrt(dx * dx + dy * dy);
+        }
+        if (gi.kind == GraphicItem::ARC) {
+            // Use max distance between any pair of start/mid/end
+            auto d = [](Point a, Point b) {
+                return std::sqrt((a.x-b.x)*(a.x-b.x) + (a.y-b.y)*(a.y-b.y));
+            };
+            return std::max({d(gi.start, gi.end), d(gi.start, gi.center),
+                             d(gi.center, gi.end)});
+        }
+        if (gi.kind == GraphicItem::CIRCLE) {
+            return gi.radius * 2.0;
+        }
+        if (gi.kind == GraphicItem::POLYGON && gi.points.size() >= 2) {
+            double max_d = 0;
+            for (size_t i = 0; i < gi.points.size(); i++) {
+                for (size_t j = i + 1; j < gi.points.size(); j++) {
+                    double dx = gi.points[j].x - gi.points[i].x;
+                    double dy = gi.points[j].y - gi.points[i].y;
+                    max_d = std::max(max_d, std::sqrt(dx*dx + dy*dy));
+                }
+            }
+            return max_d;
+        }
+        return 0;
+    };
+
+    // Max span for a graphic to be attached to a component.
+    // Board outline arcs, cutout rings, and keep-out zones are typically
+    // much larger than component-level annotation marks.
+    const double MAX_ATTACH_SPAN = 5.0; // mm
+
     // Determine if a graphic's layer is side-specific
     // Returns: 1 = front, -1 = back, 0 = either side
     auto layer_side = [](const std::string& layer) -> int {
@@ -1715,6 +1844,12 @@ void Ipc2581Parser::attach_graphics_to_components(PcbModel& model) {
 
     for (auto& gi : model.graphics) {
         if (!is_attachable(gi.layer)) {
+            remaining.push_back(gi);
+            continue;
+        }
+
+        // Skip board-level features that are too large for component attachment
+        if (graphic_span(gi) > MAX_ATTACH_SPAN) {
             remaining.push_back(gi);
             continue;
         }
@@ -1750,6 +1885,70 @@ void Ipc2581Parser::attach_graphics_to_components(PcbModel& model) {
     model.graphics = remaining;
     log("Attached " + std::to_string(attached) + " graphics to components, " +
         std::to_string(remaining.size()) + " remain board-level");
+}
+
+void Ipc2581Parser::remove_outline_duplicates(PcbModel& model) {
+    if (model.outline.empty() && model.outline_arcs.empty()) return;
+
+    // Collect all outline and cutout points for proximity matching
+    std::vector<Point> outline_pts;
+    for (auto& seg : model.outline) {
+        outline_pts.push_back(seg.start);
+        outline_pts.push_back(seg.end);
+    }
+    for (auto& arc : model.outline_arcs) {
+        outline_pts.push_back(arc.start);
+        outline_pts.push_back(arc.end);
+        outline_pts.push_back(arc.mid);
+    }
+
+    if (outline_pts.empty()) return;
+
+    const double TOL = 0.5; // mm tolerance for point matching
+
+    auto near_outline = [&](Point pt) -> bool {
+        for (auto& op : outline_pts) {
+            double dx = pt.x - op.x;
+            double dy = pt.y - op.y;
+            if (dx * dx + dy * dy < TOL * TOL) return true;
+        }
+        return false;
+    };
+
+    // Remove board-level graphics on non-copper/non-edge layers where
+    // both endpoints lie on the board outline (duplicates from Mechanical layers)
+    size_t removed = 0;
+    std::vector<GraphicItem> filtered;
+    for (auto& gi : model.graphics) {
+        // Only filter non-copper, non-Edge.Cuts layers
+        if (gi.layer.find(".Cu") != std::string::npos || gi.layer == "Edge.Cuts") {
+            filtered.push_back(gi);
+            continue;
+        }
+
+        bool is_dup = false;
+        if (gi.kind == GraphicItem::LINE) {
+            is_dup = near_outline(gi.start) && near_outline(gi.end);
+        } else if (gi.kind == GraphicItem::ARC) {
+            is_dup = near_outline(gi.start) && near_outline(gi.end) &&
+                     near_outline(gi.center); // center stores mid for arcs
+        } else if (gi.kind == GraphicItem::CIRCLE) {
+            // Full circles: check if center matches an outline point
+            is_dup = near_outline(gi.center);
+        }
+
+        if (is_dup) {
+            removed++;
+        } else {
+            filtered.push_back(gi);
+        }
+    }
+
+    if (removed > 0) {
+        model.graphics = filtered;
+        log("Removed " + std::to_string(removed) +
+            " board-level graphics that duplicate outline geometry");
+    }
 }
 
 // --- Geometry Helpers ---

@@ -71,6 +71,9 @@ private:
     // Attach board-level graphics to nearest components
     void attach_graphics_to_components(PcbModel& model);
 
+    // Remove board-level graphics that duplicate the Profile outline
+    void remove_outline_duplicates(PcbModel& model);
+
     // Convert coordinates from IPC units to mm
     double to_mm(double val) const { return val * unit_scale_; }
     Point to_mm(const Point& pt) const { return {pt.x * unit_scale_, pt.y * unit_scale_}; }
@@ -78,5 +81,13 @@ private:
     void log(const std::string& msg);
     void warn(const std::string& msg);
 };
+
+// Map a KiCad layer name to its numeric ID (returns -1 if unknown)
+int kicad_layer_name_to_id(const std::string& name);
+
+// Apply user-specified layer mapping overrides after auto-mapping
+void apply_layer_overrides(PcbModel& model,
+                           const std::vector<std::pair<std::string,std::string>>& overrides,
+                           bool verbose = false);
 
 } // namespace ipc2kicad

@@ -23,6 +23,9 @@ add_executable(ipc2581-to-kicad
     src/schematic_writer.cpp
     src/project_writer.cpp
     src/vrml_writer.cpp
+    src/gerber_parser.cpp
+    src/drill_parser.cpp
+    src/netlist_parser.cpp
 )
 
 target_include_directories(ipc2581-to-kicad PRIVATE
